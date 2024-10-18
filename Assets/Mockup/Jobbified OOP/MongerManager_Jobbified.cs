@@ -1,9 +1,11 @@
 
+using System;
 using System.Collections.Generic;
 using Unity.Collections;
 using Unity.Mathematics;
 using Unity.Profiling;
 using UnityEngine;
+using UnityEngine.Jobs;
 
 public class MongerManager_Jobbified : MonoBehaviour
 {
@@ -38,11 +40,16 @@ public class MongerManager_Jobbified : MonoBehaviour
     private float _physicsCheckStopwatch;
     private GameObject _pointContainer;
 
-    private NativeList<TarPoint> _allTarPoints;
+    private NativeArray<TarPoint> _allTarPoints;
 
     private void Awake()
     {
-        _allTarPoints = new NativeList<TarPoint>(80 * mongerCount, Allocator.Persistent);
+        int totalPointsPerMonger = Mathf.CeilToInt(pointLifetime) * 5;
+        _allTarPoints = new NativeArray<TarPoint>(totalPointsPerMonger * mongerCount, Allocator.Persistent);
+        for(int i = 0; i < _allTarPoints.Length; i++)
+        {
+            _allTarPoints[i] = TarPoint.invalid;
+        }
     }
 
     private void Start()
@@ -65,6 +72,26 @@ public class MongerManager_Jobbified : MonoBehaviour
         }
         _pointContainer = new GameObject("pointContainer");
         _pointContainer.transform.SetParent(transform);
+    }
+
+    public TarPoint RequestTarPoint(Vector3 position)
+    {
+        TarPoint tarPoint = new TarPoint
+        {
+            pointLifetime = pointLifetime,
+            totalLifetime = pointLifetime,
+            pointWidthDepth = new float2(5f),
+            worldPosition = position,
+        };
+        int index = _allTarPoints.IndexOf(TarPoint.invalid);
+        tarPoint.managerIndex = index;
+        _allTarPoints[index] = tarPoint;
+        return tarPoint;
+    }
+
+    public void ReturnTarPoint(TarPoint tarPoint)
+    {
+
     }
 
     public GameObject RequestPoint()
@@ -152,9 +179,10 @@ public class MongerManager_Jobbified : MonoBehaviour
 
         Gizmos.color = Color.yellow;
         Gizmos.DrawWireCube(transform.position, new Vector3(x, 10, y));
+
     }
 
-    public struct TarPoint
+    public struct TarPoint : IEquatable<TarPoint>
     {
         public static readonly TarPoint invalid = new TarPoint() { managerIndex = -1 };
 
@@ -163,5 +191,10 @@ public class MongerManager_Jobbified : MonoBehaviour
         public float pointLifetime;
         public float totalLifetime;
         public int managerIndex;
+
+        public bool Equals(TarPoint other)
+        {
+            return managerIndex == other.managerIndex;
+        }
     }
 }

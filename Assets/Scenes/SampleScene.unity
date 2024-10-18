@@ -286,14 +286,14 @@ MonoBehaviour:
   doLifetimeReduction: 1
   doPointScaling: 1
   mongerPrefab: {fileID: 3731851487570662621, guid: e9fb6dd6b2d01d244898bca9b74f45fe, type: 3}
-  mongerCount: 100
+  mongerCount: 1
   spawnArea: {x: 50, y: 50}
   pointPrefab: {fileID: 3987722604665331209, guid: 194a9a7f50c0fa649a9dcbf22b52c05b, type: 3}
   raycastMask:
     serializedVersion: 2
     m_Bits: 8
   raycastLength: 2
-  pointLifetime: 15
+  pointLifetime: 10
   timeBetweenTrailUpdates: 0.2
   timeBetweenPhysicsChecks: 0.25
   physicsCheckMask:
@@ -782,7 +782,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 0
+  m_IsActive: 1
 --- !u!4 &1724585300
 Transform:
   m_ObjectHideFlags: 0
@@ -964,7 +964,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!4 &2070600192
 Transform:
   m_ObjectHideFlags: 0
