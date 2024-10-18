@@ -1,5 +1,7 @@
 
 using System.Collections.Generic;
+using Unity.Collections;
+using Unity.Mathematics;
 using Unity.Profiling;
 using UnityEngine;
 
@@ -36,6 +38,13 @@ public class MongerManager_Jobbified : MonoBehaviour
     private float _physicsCheckStopwatch;
     private GameObject _pointContainer;
 
+    private NativeList<TarPoint> _allTarPoints;
+
+    private void Awake()
+    {
+        _allTarPoints = new NativeList<TarPoint>(80 * mongerCount, Allocator.Persistent);
+    }
+
     private void Start()
     {
         var transform = this.transform;
@@ -46,8 +55,8 @@ public class MongerManager_Jobbified : MonoBehaviour
         float halfAreaZ = spawnArea.y / 2;
         for(int i = 0; i < mongerCount; i++)
         {
-            float mongerPosX = Random.Range(-halfAreaX, halfAreaX);
-            float mongerPosZ = Random.Range(-halfAreaZ, halfAreaZ);
+            float mongerPosX = UnityEngine.Random.Range(-halfAreaX, halfAreaX);
+            float mongerPosZ = UnityEngine.Random.Range(-halfAreaZ, halfAreaZ);
 
             Vector3 spawnPos = new Vector3(mongerPosX + myX, 2, mongerPosZ + myZ);
             var instance = Instantiate(mongerPrefab, spawnPos, Quaternion.identity, transform);
@@ -130,6 +139,12 @@ public class MongerManager_Jobbified : MonoBehaviour
         }
     }
 
+    private void OnDestroy()
+    {
+        if (_allTarPoints.IsCreated)
+            _allTarPoints.Dispose();
+    }
+
     private void OnDrawGizmos()
     {
         float x = spawnArea.x;
@@ -137,5 +152,16 @@ public class MongerManager_Jobbified : MonoBehaviour
 
         Gizmos.color = Color.yellow;
         Gizmos.DrawWireCube(transform.position, new Vector3(x, 10, y));
+    }
+
+    public struct TarPoint
+    {
+        public static readonly TarPoint invalid = new TarPoint() { managerIndex = -1 };
+
+        public float3 worldPosition;
+        public float2 pointWidthDepth;
+        public float pointLifetime;
+        public float totalLifetime;
+        public int managerIndex;
     }
 }
