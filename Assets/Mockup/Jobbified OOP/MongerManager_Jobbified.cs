@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using Unity.Collections;
+using Unity.Jobs.LowLevel.Unsafe;
 using Unity.Mathematics;
 using Unity.Profiling;
 using UnityEngine;
@@ -40,15 +41,31 @@ public class MongerManager_Jobbified : MonoBehaviour
     private float _physicsCheckStopwatch;
     private GameObject _pointContainer;
 
+    private GameObject[] _pooledPoints;
+    private TransformAccessArray _allPointTransforms;
     private NativeArray<TarPoint> _allTarPoints;
 
     private void Awake()
     {
+        _pointContainer = new GameObject("pointContainer");
+        _pointContainer.transform.SetParent(transform);
+
         int totalPointsPerMonger = Mathf.CeilToInt(pointLifetime) * 5;
         _allTarPoints = new NativeArray<TarPoint>(totalPointsPerMonger * mongerCount, Allocator.Persistent);
         for(int i = 0; i < _allTarPoints.Length; i++)
         {
             _allTarPoints[i] = TarPoint.invalid;
+        }
+
+        var containerTransform = _pointContainer.transform;
+        _allPointTransforms = new TransformAccessArray(totalPointsPerMonger * mongerCount, JobsUtility.JobWorkerMaximumCount / 2);
+        _pooledPoints = new GameObject[totalPointsPerMonger * mongerCount];
+
+        for(int i = 0; i < _pooledPoints.Length; i++)
+        {
+            var instance = Instantiate(pointPrefab, containerTransform);
+            _pooledPoints[i] = instance;
+            _allPointTransforms[i] = instance.transform;
         }
     }
 
@@ -70,8 +87,6 @@ public class MongerManager_Jobbified : MonoBehaviour
             instance.SetManager(this);
             _mongerInstances.Add(instance);
         }
-        _pointContainer = new GameObject("pointContainer");
-        _pointContainer.transform.SetParent(transform);
     }
 
     public TarPoint RequestTarPoint(Vector3 position)
@@ -91,7 +106,10 @@ public class MongerManager_Jobbified : MonoBehaviour
 
     public void ReturnTarPoint(TarPoint tarPoint)
     {
+        if (tarPoint.Equals(TarPoint.invalid))
+            return;
 
+        _allTarPoints[tarPoint.managerIndex] = TarPoint.invalid;
     }
 
     public GameObject RequestPoint()
@@ -170,6 +188,11 @@ public class MongerManager_Jobbified : MonoBehaviour
     {
         if (_allTarPoints.IsCreated)
             _allTarPoints.Dispose();
+
+        if(_allPointTransforms.isCreated)
+            _allPointTransforms.Dispose();
+
+        _pointContainer = null;
     }
 
     private void OnDrawGizmos()
