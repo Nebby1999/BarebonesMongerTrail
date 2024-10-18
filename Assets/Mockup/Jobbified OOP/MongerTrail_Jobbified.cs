@@ -9,13 +9,14 @@ public class MongerTrail_Jobbified : MonoBehaviour
 {
     [NonSerialized]
     public new Transform transform;
-    private Collider[] _colliders = new Collider[50];
+    public int damage = 1;
+    public MockupMovement mockupMovement;
+    private RaycastHit[] _physicsHits = new RaycastHit[5];
     private List<MongerManager_Jobbified.TarPoolEntry> _poolEntries = new List<MongerManager_Jobbified.TarPoolEntry>();
     private List<MongerManager_Jobbified.TarPoint> _points = new List<MongerManager_Jobbified.TarPoint>();
     private List<GameObject> _ignoredObjects = new List<GameObject>();
 
     private MongerManager_Jobbified _manager;
-    private int _managerIndex;
 
     private void Awake()
     {
@@ -24,6 +25,21 @@ public class MongerTrail_Jobbified : MonoBehaviour
     public void SetManager(MongerManager_Jobbified manager)
     {
         _manager = manager;
+        _manager.AddMonger(this);
+    }
+
+    public void OnEnable()
+    {
+        if (!_manager)
+            return;
+
+        _manager.AddMonger(this);
+    }
+
+
+    public void OnDisable()
+    {
+        _manager.RemoveMonger(this);
     }
 
     public void UpdateTrail(float deltaTime)
@@ -52,7 +68,7 @@ public class MongerTrail_Jobbified : MonoBehaviour
             return;
         }
 
-        MongerManager_Jobbified.TarPoint tarPoint = _manager.RequestTarPoint(hit.point, out var poolEntry);
+        MongerManager_Jobbified.TarPoint tarPoint = _manager.RequestTarPoint(this, hit.point, hit.normal, out var poolEntry);
 
         var pointTransform = poolEntry.tiedGameObject.transform;
         pointTransform.up = hit.normal;
@@ -70,27 +86,29 @@ public class MongerTrail_Jobbified : MonoBehaviour
         _ignoredObjects.Clear();
         _ignoredObjects.Add(gameObject);
 
-        for(int i = _points.Count - 1; i >= 0; i--)
+        for (int i = _points.Count - 1; i >= 0; i--)
         {
             var point = _points[i];
             var pointPos = point.worldPosition;
-            var xy = Vector2.Lerp(Vector2.zero, point.pointWidthDepth, Util.Remap(point.pointLifetime, 0, point.totalLifetime, 0, 1));
 
-            int totalOverlaps = Physics.OverlapBoxNonAlloc(pointPos, new Vector3(xy.x / 2, 0.5f, xy.y / 2), _colliders, Quaternion.identity, _manager.physicsCheckMask);
-            for(int j = 0; j < totalOverlaps; j++)
+
+            int totalOverlaps = Physics.RaycastNonAlloc(pointPos, point.normalDirection, _physicsHits, 1, _manager.physicsCheckMask, QueryTriggerInteraction.Collide);
+            for (int j = 0; j < totalOverlaps; j++)
             {
-                var collider = _colliders[j];
-                if(!collider.TryGetComponent<MockupMovement>(out var mm))
+                var collider = _physicsHits[j].collider;
+                if (!collider.TryGetComponent<MongerTarDetector>(out var mtd))
                 {
                     continue;
                 }
+
+                var mm = mtd.tiedMovement;
 
                 if (!mm)
                     continue;
 
 
                 var collidedGameObject = mm.gameObject;
-                if(!_ignoredObjects.Contains(collidedGameObject))
+                if (!_ignoredObjects.Contains(collidedGameObject))
                 {
                     _ignoredObjects.Add(collidedGameObject);
                 }

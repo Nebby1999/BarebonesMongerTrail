@@ -9,7 +9,7 @@ public class MongerTrail_OOP : MonoBehaviour
 {
     [NonSerialized]
     public new Transform transform;
-    private Collider[] _colliders = new Collider[50];
+    private RaycastHit[] _physicsHits = new RaycastHit[5];
     private List<TarPoint> _points = new List<TarPoint>();
     private List<GameObject> _ignoredObjects = new List<GameObject>();
 
@@ -54,6 +54,7 @@ public class MongerTrail_OOP : MonoBehaviour
         TarPoint tarPoint = new TarPoint
         {
             worldPosition = hit.point,
+            normalDirection = hit.normal,
             pointLifetime = _manager.pointLifetime,
             totalLifetime = _manager.pointLifetime,
             pointWidthDepth = new Vector3(5, 5)
@@ -82,14 +83,17 @@ public class MongerTrail_OOP : MonoBehaviour
             var pointPos = point.worldPosition;
             var xy = Vector2.Lerp(Vector2.zero, point.pointWidthDepth, Util.Remap(point.pointLifetime, 0, point.totalLifetime, 0, 1));
 
-            int totalOverlaps = Physics.OverlapBoxNonAlloc(pointPos, new Vector3(xy.x / 2, 0.5f, xy.y / 2), _colliders, Quaternion.identity, _manager.physicsCheckMask);
-            for(int j = 0; j < totalOverlaps; j++)
+
+            int totalOverlaps = Physics.RaycastNonAlloc(pointPos, point.normalDirection, _physicsHits, 1, _manager.physicsCheckMask, QueryTriggerInteraction.Collide);
+            for (int j = 0; j < totalOverlaps; j++)
             {
-                var collider = _colliders[j];
-                if(!collider.TryGetComponent<MockupMovement>(out var mm))
+                var collider = _physicsHits[j].collider;
+                if(!collider.TryGetComponent<MongerTarDetector>(out var mtd))
                 {
                     continue;
                 }
+
+                var mm = mtd.tiedMovement;
 
                 if (!mm)
                     continue;
@@ -124,6 +128,7 @@ public class MongerTrail_OOP : MonoBehaviour
     private struct TarPoint
     {
         public Vector3 worldPosition;
+        public Vector3 normalDirection;
         public Vector2 pointWidthDepth;
         public float pointLifetime;
         public float totalLifetime;

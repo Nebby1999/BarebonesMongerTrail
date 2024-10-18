@@ -11,6 +11,8 @@ using UnityEngine.Jobs;
 
 public class MongerManager_Jobbified : MonoBehaviour
 {
+    public static MongerManager_Jobbified instance;
+
     static readonly ProfilerMarker _trailUpdateMarker = new ProfilerMarker(ProfilerCategory.Scripts, "MongerTrail_Jobbified.TrailUpdates");
     static readonly ProfilerMarker _physicsChecksMarker = new ProfilerMarker(ProfilerCategory.Scripts, "MongerTrail_Jobbified.PhysicsChecks");
     static readonly ProfilerMarker _lifetimeAndScalingMarker = new ProfilerMarker(ProfilerCategory.Scripts, "MongerTrail_Jobbified.LifetimeAndScalings");
@@ -37,7 +39,6 @@ public class MongerManager_Jobbified : MonoBehaviour
     public LayerMask physicsCheckMask;
 
     private List<MongerTrail_Jobbified> _mongerInstances = new List<MongerTrail_Jobbified>();
-    private Queue<GameObject> _pointPool = new Queue<GameObject>();
     private float _trailUpdateStopwatch;
     private float _physicsCheckStopwatch;
 
@@ -47,14 +48,28 @@ public class MongerManager_Jobbified : MonoBehaviour
     private TarPoolEntry[] _tarPoolEntries;
     private TransformAccessArray _allPointTransforms;
     private NativeArray<TarPoint> _allTarPoints;
+    private NativeList<RaycastCommand> _physicsChecksRaycastCommands;
+    private NativeHashMap<int, int> _mongerTarColliderIDToMockupMovementID;
+    private Dictionary<int, MockupMovement> _mockupMovementIDToMockupMovement;
+    private Dictionary<int, MongerTrail_Jobbified> _mongerTrailIDToMongerTrail;
+
+    private List<ManagerIndex> _tarPointPhysicsChecks;
+    private List<int> _physicsChecksIgnoredObjectIDs = new List<int>();
 
     private void Awake()
     {
+        instance = this;
+
         _totalPointsPerMonger = Mathf.CeilToInt(pointLifetime) * 5;
         _arraySizes = _totalPointsPerMonger * mongerCount;
         _allTarPoints = new NativeArray<TarPoint>(_arraySizes, Allocator.Persistent);
         _allPointTransforms = new TransformAccessArray(_arraySizes);
+        _physicsChecksRaycastCommands = new NativeList<RaycastCommand>(_arraySizes / 2, Allocator.Persistent);
+        _mongerTarColliderIDToMockupMovementID = new NativeHashMap<int, int>(1, Allocator.Persistent);
+        _mockupMovementIDToMockupMovement = new Dictionary<int, MockupMovement>();
+        _mongerTrailIDToMongerTrail = new Dictionary<int, MongerTrail_Jobbified>();
         _tarPoolEntries = new TarPoolEntry[_arraySizes];
+        _tarPointPhysicsChecks = new List<ManagerIndex>(_arraySizes / 2);
 
         int childrenInContainer = 0;
         int containerCount = 0;
@@ -78,10 +93,9 @@ public class MongerManager_Jobbified : MonoBehaviour
             childrenInContainer++;
             _allPointTransforms.Add(instance.transform);
 
-            var entry = new TarPoolEntry
+            var entry = new TarPoolEntry(i)
             {
                 tiedGameObject = instance,
-                poolIndex = i,
                 isInPool = true
             };
             _tarPoolEntries[i] = entry;
@@ -108,17 +122,18 @@ public class MongerManager_Jobbified : MonoBehaviour
         }
     }
 
-    public TarPoint RequestTarPoint(Vector3 position, out TarPoolEntry gameObjectForPoint)
+    public TarPoint RequestTarPoint(MongerTrail_Jobbified owner, Vector3 position, Vector3 normalDirection, out TarPoolEntry gameObjectForPoint)
     {
-        TarPoint tarPoint = new TarPoint
+        int index = _allTarPoints.IndexOf(TarPoint.invalid);
+        TarPoint tarPoint = new TarPoint(index)
         {
             pointLifetime = pointLifetime,
             totalLifetime = pointLifetime,
-            pointWidthDepth = new float2(5f),
+            normalDirection = normalDirection,
+            remappedLifetime0to1 = 1,
             worldPosition = position,
+            currentOwnerInstanceID = owner.GetInstanceID()
         };
-        int index = _allTarPoints.IndexOf(TarPoint.invalid);
-        tarPoint.managerIndex = index;
         _allTarPoints[index] = tarPoint;
 
         gameObjectForPoint = _tarPoolEntries[index];
@@ -128,15 +143,44 @@ public class MongerManager_Jobbified : MonoBehaviour
 
     public void ReturnTarPoint(TarPoint tarPoint, TarPoolEntry gameObjectForPoint)
     {
-        if (tarPoint.Equals(TarPoint.invalid))
+        if (!tarPoint.isValid)
             return;
 
-        if (tarPoint.managerIndex != gameObjectForPoint.poolIndex)
+        if (tarPoint.managerIndex != gameObjectForPoint.managerPoolIndex)
             return;
 
-        _allTarPoints[tarPoint.managerIndex] = TarPoint.invalid;
+
+        _allTarPoints[(int)tarPoint.managerIndex] = TarPoint.invalid;
         gameObjectForPoint.isInPool = true;
-        _tarPoolEntries[tarPoint.managerIndex] = gameObjectForPoint;
+        _tarPoolEntries[(int)tarPoint.managerIndex] = gameObjectForPoint;
+    }
+
+    public void AddDetector(MongerTarDetector detector)
+    {
+        var colliderID = detector.boxCollider.GetInstanceID();
+        var mockupMovementID = detector.tiedMovement.GetInstanceID();
+
+        _mockupMovementIDToMockupMovement.Add(mockupMovementID, detector.tiedMovement);
+        _mongerTarColliderIDToMockupMovementID.Add(colliderID, mockupMovementID);
+    }
+
+    public void AddMonger(MongerTrail_Jobbified monger)
+    {
+        _mongerTrailIDToMongerTrail.Add(monger.GetInstanceID(), monger);
+    }
+
+    public void RemoveMonger(MongerTrail_Jobbified monger)
+    {
+        _mongerTrailIDToMongerTrail.Remove(monger.GetInstanceID());
+    }
+
+    public void RemoveDetector(MongerTarDetector detector)
+    {
+        var colliderID = detector.boxCollider.GetInstanceID();
+        var mockupMovementID = detector.tiedMovement.GetInstanceID();
+
+        _mockupMovementIDToMockupMovement.Remove(mockupMovementID);
+        _mongerTarColliderIDToMockupMovementID.Remove(colliderID);
     }
 
 
@@ -144,6 +188,8 @@ public class MongerManager_Jobbified : MonoBehaviour
     {
         bool shouldPhysicsCheck = false;
         bool shouldTrailUpdate = false;
+        NativeArray<RaycastHit> hitBuffer = default;
+        NativeArray<int> processHitBuffer_output = default;
 
         JobHandle dependency = default;
         float deltaTime = Time.fixedDeltaTime;
@@ -177,10 +223,39 @@ public class MongerManager_Jobbified : MonoBehaviour
         {
             using(_physicsChecksMarker.Auto())
             {
-                for(int i = 0; i < _mongerInstances.Count; i++)
+                _tarPointPhysicsChecks.Clear();
+                _physicsChecksRaycastCommands.Clear();
+                for(int i = 0; i < _arraySizes; i++)
                 {
-                    _mongerInstances[i].PhysicsCheck(deltaTime);
+                    var point = _allTarPoints[i];
+                    if (!point.isValid)
+                    {
+                        continue;
+                    }
+                    _tarPointPhysicsChecks.Add(point.managerIndex);
+                    var command = new RaycastCommand(point.worldPosition, point.normalDirection, 1, physicsCheckMask, 5);
+                    _physicsChecksRaycastCommands.Add(command);
                 }
+
+                //The length is the total indvidual raycast commands, times 5, since the command has a max of 5 hits
+                hitBuffer = new NativeArray<RaycastHit>(_physicsChecksRaycastCommands.Length * 5, Allocator.TempJob);
+
+                //Schedule it.
+                dependency = RaycastCommand.ScheduleBatch(_physicsChecksRaycastCommands, hitBuffer, _totalPointsPerMonger, dependency);
+
+                //We need to process the hits now, we'll just care for the hit MockupMovements.
+
+                //The output contains the mockup movement IDs, this way we can directly map raycasthit to the proper mockup movement, then iterate properly thru the results.
+                processHitBuffer_output = new NativeArray<int>(hitBuffer.Length, Allocator.TempJob);
+
+                //Schedule the job that will transform all the raycast hit into mockup movement IDs.
+                dependency = new ProcessHitBufferJob
+                {
+                    colliderIDToMockupMovementID = _mongerTarColliderIDToMockupMovementID,
+                    numberOfRaycastToProcess = 5,
+                    output = processHitBuffer_output,
+                    raycastHits = hitBuffer
+                }.Schedule(_physicsChecksRaycastCommands.Length, _totalPointsPerMonger, dependency);
             }
         }
 
@@ -195,7 +270,7 @@ public class MongerManager_Jobbified : MonoBehaviour
                         deltaTime = deltaTime,
                         tarPoints = _allTarPoints
                     };
-                    dependency = lifetimeJob.Schedule(_arraySizes, _totalPointsPerMonger);
+                    dependency = lifetimeJob.Schedule(_arraySizes, _totalPointsPerMonger, dependency);
                 }
 
                 if(doPointScaling)
@@ -214,11 +289,66 @@ public class MongerManager_Jobbified : MonoBehaviour
 
         dependency.Complete();
 
+        if(shouldPhysicsCheck)
+        {
+            for (int i = 0; i < _tarPointPhysicsChecks.Count; i++)
+            {
+
+                var pointManager = _tarPointPhysicsChecks[i];
+                var point = GetPoint(pointManager);
+
+                if (!point.isValid) //This shouldnt happen.
+                    continue;
+
+                if (!_mongerTrailIDToMongerTrail.TryGetValue(point.currentOwnerInstanceID, out var mongerTrailThatOwnsThePoint))
+                {
+                    continue;
+                }
+
+                var startIndex = i * 5;
+                for(int j = 0; j < 5; j++)
+                {
+                    int outputIndex = startIndex + j;
+                    var id = processHitBuffer_output[outputIndex];
+                    if(id == 0) //we've hit the last one of our point.
+                    {
+                        break;
+                    }
+
+                    if(_physicsChecksIgnoredObjectIDs.Contains(id))
+                    {
+                        continue;
+                    }
+
+                    if(!_mockupMovementIDToMockupMovement.TryGetValue(id, out var mockupMovement))
+                    {
+                        continue;
+                    }
+
+                    if (mockupMovement == mongerTrailThatOwnsThePoint.mockupMovement)
+                    {
+                        _physicsChecksIgnoredObjectIDs.Add(id);
+                        continue;
+                    }
+
+                    mockupMovement.number -= mongerTrailThatOwnsThePoint.damage;
+                    _physicsChecksIgnoredObjectIDs.Add(id);
+                }
+            }
+        }
+
         for(int i = 0; i < _mongerInstances.Count; i++)
         {
             _mongerInstances[i].UpdateFromManager();
         }
+
+        if (hitBuffer.IsCreated)
+            hitBuffer.Dispose();
+
+        if (processHitBuffer_output.IsCreated)
+            processHitBuffer_output.Dispose();
     }
+
 
     private void OnDestroy()
     {
@@ -228,6 +358,13 @@ public class MongerManager_Jobbified : MonoBehaviour
         if(_allPointTransforms.isCreated)
             _allPointTransforms.Dispose();
 
+        if (_physicsChecksRaycastCommands.IsCreated)
+            _physicsChecksRaycastCommands.Dispose();
+
+        if (_mongerTarColliderIDToMockupMovementID.IsCreated)
+            _mongerTarColliderIDToMockupMovementID.Dispose();
+
+        instance = null;
     }
 
     private void OnDrawGizmos()
@@ -240,9 +377,9 @@ public class MongerManager_Jobbified : MonoBehaviour
 
     }
 
-    internal TarPoint GetPoint(int managerIndex)
+    internal TarPoint GetPoint(ManagerIndex managerIndex)
     {
-        return _allTarPoints[managerIndex];
+        return _allTarPoints[(int)managerIndex];
     }
 
     /// <summary>
@@ -264,27 +401,55 @@ public class MongerManager_Jobbified : MonoBehaviour
             }
         }
         private bool _isInPool;
-        public int poolIndex;
+        public ManagerIndex managerPoolIndex => _managerPoolIndex;
+        private ManagerIndex _managerPoolIndex;
+
+        internal TarPoolEntry(int index)
+        {
+            tiedGameObject = null;
+            _isInPool = false;
+            _managerPoolIndex = (ManagerIndex)index;
+        }
 
         public bool Equals(TarPoolEntry other)
         {
-            return poolIndex == other.poolIndex;
+            return managerPoolIndex == other.managerPoolIndex;
         }
     }
 
     public struct TarPoint : IEquatable<TarPoint>
     {
-        public static readonly TarPoint invalid = new TarPoint() { managerIndex = -1 };
+        public static readonly TarPoint invalid = new TarPoint(-1);
 
         public float3 worldPosition;
-        public float2 pointWidthDepth;
+        public float3 normalDirection;
         public float pointLifetime;
         public float totalLifetime;
-        public int managerIndex;
+        public float remappedLifetime0to1;
+        public int currentOwnerInstanceID;
+        public ManagerIndex managerIndex => _managerIndex;
+        private ManagerIndex _managerIndex;
+        public bool isValid => !Equals(invalid);
 
         public bool Equals(TarPoint other)
         {
-            return managerIndex == other.managerIndex;
+            return _managerIndex == other._managerIndex;
         }
+
+        internal TarPoint(int index)
+        {
+            _managerIndex = (ManagerIndex)index;
+            worldPosition = float3.zero;
+            normalDirection = float3.zero;
+            pointLifetime = 0;
+            totalLifetime = 0;
+            remappedLifetime0to1 = 0;
+            currentOwnerInstanceID = -1;
+        }
+    }
+
+    public enum ManagerIndex : int
+    {
+        Invalid = -1
     }
 }

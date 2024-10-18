@@ -9,6 +9,7 @@ public class MockupMovement : MonoBehaviour
 
     private float _timeBetweenMovementStopwatch;
     private Vector3 _chosenMovementVector;
+    public int number = 0;
 
     private void Start()
     {

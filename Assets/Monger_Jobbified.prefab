@@ -9,7 +9,7 @@ PrefabInstance:
     m_Modifications:
     - target: {fileID: 4510680724768792847, guid: 156ec68afecaa0f438833820d29d98f3, type: 3}
       propertyPath: m_Name
-      value: Monger_Base
+      value: Monger_Jobbified
       objectReference: {fileID: 0}
     - target: {fileID: 4583941662065649958, guid: 156ec68afecaa0f438833820d29d98f3, type: 3}
       propertyPath: m_RootOrder
@@ -72,5 +72,18 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 97cb8da087e909c48bf1d4dfe06241b0, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  damage: 1
+  mockupMovement: {fileID: 8309711985043437118}
+--- !u!114 &8309711985043437118 stripped
+MonoBehaviour:
+  m_CorrespondingSourceObject: {fileID: 3401110821716013276, guid: 156ec68afecaa0f438833820d29d98f3, type: 3}
+  m_PrefabInstance: {fileID: 6656649294420854498}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 7131453839898896365}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f0bcfcc9f4b284d47b0a0fbd72ae34af, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
