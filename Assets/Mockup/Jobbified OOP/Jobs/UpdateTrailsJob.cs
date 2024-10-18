@@ -1,18 +1,12 @@
 using System.Collections;
 using System.Collections.Generic;
+using Unity.Jobs;
 using UnityEngine;
 
-public class UpdateTrailsJob : MonoBehaviour
+public struct UpdateTrailsJob : IJobParallelFor
 {
-    // Start is called before the first frame update
-    void Start()
+    public void Execute(int index)
     {
-        
-    }
 
-    // Update is called once per frame
-    void Update()
-    {
-        
     }
 }

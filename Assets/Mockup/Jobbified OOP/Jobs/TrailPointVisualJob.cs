@@ -1,8 +1,10 @@
+using Unity.Burst;
 using Unity.Collections;
 using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Jobs;
 
+[BurstCompile(OptimizeFor = OptimizeFor.Performance)]
 public struct TrailPointVisualJob : IJobParallelForTransform
 {
     public float totalLifetime;

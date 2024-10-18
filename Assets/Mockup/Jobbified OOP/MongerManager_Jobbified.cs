@@ -40,7 +40,7 @@ public class MongerManager_Jobbified : MonoBehaviour
     private Queue<GameObject> _pointPool = new Queue<GameObject>();
     private float _trailUpdateStopwatch;
     private float _physicsCheckStopwatch;
-    private GameObject _pointContainer;
+
 
     private int _totalPointsPerMonger;
     private int _arraySizes;
@@ -50,21 +50,32 @@ public class MongerManager_Jobbified : MonoBehaviour
 
     private void Awake()
     {
-        _pointContainer = new GameObject("pointContainer");
-        _pointContainer.transform.SetParent(transform);
-        var containerTransform = _pointContainer.transform;
-
         _totalPointsPerMonger = Mathf.CeilToInt(pointLifetime) * 5;
         _arraySizes = _totalPointsPerMonger * mongerCount;
         _allTarPoints = new NativeArray<TarPoint>(_arraySizes, Allocator.Persistent);
-        _allPointTransforms = new TransformAccessArray(_arraySizes, JobsUtility.JobWorkerMaximumCount / 2);
+        _allPointTransforms = new TransformAccessArray(_arraySizes);
         _tarPoolEntries = new TarPoolEntry[_arraySizes];
 
+        int childrenInContainer = 0;
+        int containerCount = 0;
+        GameObject container = null;
         for(int i = 0; i < _arraySizes; i++)
         {
             _allTarPoints[i] = TarPoint.invalid;
 
-            var instance = Instantiate(pointPrefab, containerTransform);
+            if(childrenInContainer >= _totalPointsPerMonger)
+            {
+                childrenInContainer = 0;
+                container = null;
+            }
+
+            if(!container)
+            {
+                container = new GameObject($"SplotchContainer{containerCount}");
+                containerCount++;
+            }
+            var instance = Instantiate(pointPrefab, container.transform);
+            childrenInContainer++;
             _allPointTransforms.Add(instance.transform);
 
             var entry = new TarPoolEntry
@@ -134,6 +145,7 @@ public class MongerManager_Jobbified : MonoBehaviour
         bool shouldPhysicsCheck = false;
         bool shouldTrailUpdate = false;
 
+        JobHandle dependency = default;
         float deltaTime = Time.fixedDeltaTime;
         _physicsCheckStopwatch += doPhysicsChecks ? deltaTime : 0;
         _trailUpdateStopwatch += doTrailUpdates ? deltaTime : 0;
@@ -176,7 +188,6 @@ public class MongerManager_Jobbified : MonoBehaviour
         {
             using(_lifetimeAndScalingMarker.Auto())
             {
-                JobHandle lifetimeJobHandle = default;
                 if(doLifetimeReduction)
                 {
                     TrailPointLifetimeJob lifetimeJob = new TrailPointLifetimeJob
@@ -184,10 +195,9 @@ public class MongerManager_Jobbified : MonoBehaviour
                         deltaTime = deltaTime,
                         tarPoints = _allTarPoints
                     };
-                    lifetimeJobHandle = lifetimeJob.Schedule(_arraySizes, _totalPointsPerMonger);
+                    dependency = lifetimeJob.Schedule(_arraySizes, _totalPointsPerMonger);
                 }
 
-                JobHandle pointScalingJobHandle = default;
                 if(doPointScaling)
                 {
                     TrailPointVisualJob job = new TrailPointVisualJob
@@ -196,13 +206,13 @@ public class MongerManager_Jobbified : MonoBehaviour
                         tarPoints = _allTarPoints,
                         totalLifetime = pointLifetime
                     };
-                    pointScalingJobHandle = job.Schedule(_allPointTransforms, lifetimeJobHandle);
+                    dependency = job.Schedule(_allPointTransforms, dependency);
                 }
 
-                if (!pointScalingJobHandle.IsCompleted)
-                    pointScalingJobHandle.Complete();
             }
         }
+
+        dependency.Complete();
 
         for(int i = 0; i < _mongerInstances.Count; i++)
         {
@@ -218,7 +228,6 @@ public class MongerManager_Jobbified : MonoBehaviour
         if(_allPointTransforms.isCreated)
             _allPointTransforms.Dispose();
 
-        _pointContainer = null;
     }
 
     private void OnDrawGizmos()

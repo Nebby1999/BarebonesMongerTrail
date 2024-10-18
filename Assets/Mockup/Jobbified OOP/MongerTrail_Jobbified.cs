@@ -98,26 +98,6 @@ public class MongerTrail_Jobbified : MonoBehaviour
         }
     }
 
-    public void PointUpdate(float deltaTime, bool doLifetimeReduction, bool doPointScaling)
-    {
-        for(int i = _points.Count - 1; i >= 0; i--)
-        {
-            var point = _points[i];
-            var poolEntry = _poolEntries[i];
-
-            if (doLifetimeReduction)
-                point.pointLifetime -= deltaTime;
-
-            if(doPointScaling)
-            {
-                poolEntry.tiedGameObject.transform.localScale = Vector3.Lerp(Vector3.zero, Vector3.one, Util.Remap(point.pointLifetime, 0, point.totalLifetime, 0, 1));
-            }
-
-            _points[i] = point;
-            _poolEntries[i] = poolEntry;
-        }
-    }
-
     internal void UpdateFromManager()
     {
         for(int i = 0; i < _points.Count; i++)
