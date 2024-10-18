@@ -6,6 +6,25 @@ using UnityEngine.Jobs;
 public struct TrailPointVisualJob : IJobParallelForTransform
 {
     public float totalLifetime;
+    public float3 maxSize;
+    [ReadOnly]
+    public NativeArray<MongerManager_Jobbified.TarPoint> tarPoints;
+
+    public void Execute(int index, TransformAccess transform)
+    {
+        var point = tarPoints[index];
+        if(!transform.isValid || point.Equals(MongerManager_Jobbified.TarPoint.invalid))
+        {
+            return;
+        }
+
+        transform.localScale = math.lerp(float3.zero, maxSize, math.remap(0, totalLifetime, 0, 1, point.pointLifetime));
+    }
+}
+/*
+public struct TrailPointVisualJob : IJobParallelForTransform
+{
+    public float totalLifetime;
     public float deltaTime;
     public NativeArray<float> pointLifetimes;
     public void Execute(int index, TransformAccess transform)
@@ -18,4 +37,4 @@ public struct TrailPointVisualJob : IJobParallelForTransform
         transform.localScale = math.lerp(float3.zero, new float3(1f), Util.Remap(lifetime, 0, totalLifetime, 0, 1));
         pointLifetimes[index] = lifetime;
     }
-}
+}*/

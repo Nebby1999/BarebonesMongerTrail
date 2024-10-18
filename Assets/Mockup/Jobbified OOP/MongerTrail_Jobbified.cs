@@ -10,7 +10,8 @@ public class MongerTrail_Jobbified : MonoBehaviour
     [NonSerialized]
     public new Transform transform;
     private Collider[] _colliders = new Collider[50];
-    private List<TarPoint> _points = new List<TarPoint>();
+    private List<MongerManager_Jobbified.TarPoolEntry> _poolEntries = new List<MongerManager_Jobbified.TarPoolEntry>();
+    private List<MongerManager_Jobbified.TarPoint> _points = new List<MongerManager_Jobbified.TarPoint>();
     private List<GameObject> _ignoredObjects = new List<GameObject>();
 
     private MongerManager_Jobbified _manager;
@@ -37,11 +38,11 @@ public class MongerTrail_Jobbified : MonoBehaviour
     private void RemovePoint(int index)
     {
         var point = _points[index];
-        if(point.pointTransform)
-        {
-            _manager.ReturnPoint(point.pointTransform.gameObject);
-        }
+        var pointPool = _poolEntries[index];
+
+        _manager.ReturnTarPoint(point, pointPool);
         _points.RemoveAt(index);
+        _poolEntries.RemoveAt(index);
     }
 
     private void AddPoint()
@@ -51,21 +52,14 @@ public class MongerTrail_Jobbified : MonoBehaviour
             return;
         }
 
-        TarPoint tarPoint = new TarPoint
-        {
-            worldPosition = hit.point,
-            pointLifetime = _manager.pointLifetime,
-            totalLifetime = _manager.pointLifetime,
-            pointWidthDepth = new Vector3(5, 5)
-        };
+        MongerManager_Jobbified.TarPoint tarPoint = _manager.RequestTarPoint(hit.point, out var poolEntry);
 
-        var pointInstance = _manager.RequestPoint();
-        var pointTransform = pointInstance.transform;
+        var pointTransform = poolEntry.tiedGameObject.transform;
         pointTransform.up = hit.normal;
         pointTransform.position = hit.point;
         pointTransform.rotation = Quaternion.Euler(0, UnityEngine.Random.Range(0, 360), 0);
-        tarPoint.pointTransform = pointTransform;
         _points.Add(tarPoint);
+        _poolEntries.Add(poolEntry);
     }
 
     public void PhysicsCheck(float deltaTime)
@@ -109,24 +103,28 @@ public class MongerTrail_Jobbified : MonoBehaviour
         for(int i = _points.Count - 1; i >= 0; i--)
         {
             var point = _points[i];
+            var poolEntry = _poolEntries[i];
+
             if (doLifetimeReduction)
                 point.pointLifetime -= deltaTime;
 
             if(doPointScaling)
             {
-                point.pointTransform.localScale = Vector3.Lerp(Vector3.zero, Vector3.one, Util.Remap(point.pointLifetime, 0, point.totalLifetime, 0, 1));
+                poolEntry.tiedGameObject.transform.localScale = Vector3.Lerp(Vector3.zero, Vector3.one, Util.Remap(point.pointLifetime, 0, point.totalLifetime, 0, 1));
             }
 
             _points[i] = point;
+            _poolEntries[i] = poolEntry;
         }
     }
 
-    private struct TarPoint
+    internal void UpdateFromManager()
     {
-        public Vector3 worldPosition;
-        public Vector2 pointWidthDepth;
-        public float pointLifetime;
-        public float totalLifetime;
-        public Transform pointTransform;
+        for(int i = 0; i < _points.Count; i++)
+        {
+            var myPoint = _points[i];
+
+            _points[i] = _manager.GetPoint(myPoint.managerIndex);
+        }
     }
 }

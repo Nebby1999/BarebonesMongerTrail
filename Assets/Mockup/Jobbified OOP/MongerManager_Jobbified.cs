@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using Unity.Collections;
+using Unity.Jobs;
 using Unity.Jobs.LowLevel.Unsafe;
 using Unity.Mathematics;
 using Unity.Profiling;
@@ -41,6 +42,8 @@ public class MongerManager_Jobbified : MonoBehaviour
     private float _physicsCheckStopwatch;
     private GameObject _pointContainer;
 
+    private int _totalPointsPerMonger;
+    private int _arraySizes;
     private TarPoolEntry[] _tarPoolEntries;
     private TransformAccessArray _allPointTransforms;
     private NativeArray<TarPoint> _allTarPoints;
@@ -49,28 +52,26 @@ public class MongerManager_Jobbified : MonoBehaviour
     {
         _pointContainer = new GameObject("pointContainer");
         _pointContainer.transform.SetParent(transform);
+        var containerTransform = _pointContainer.transform;
 
-        int totalPointsPerMonger = Mathf.CeilToInt(pointLifetime) * 5;
-        _allTarPoints = new NativeArray<TarPoint>(totalPointsPerMonger * mongerCount, Allocator.Persistent);
-        for(int i = 0; i < _allTarPoints.Length; i++)
+        _totalPointsPerMonger = Mathf.CeilToInt(pointLifetime) * 5;
+        _arraySizes = _totalPointsPerMonger * mongerCount;
+        _allTarPoints = new NativeArray<TarPoint>(_arraySizes, Allocator.Persistent);
+        _allPointTransforms = new TransformAccessArray(_arraySizes, JobsUtility.JobWorkerMaximumCount / 2);
+        _tarPoolEntries = new TarPoolEntry[_arraySizes];
+
+        for(int i = 0; i < _arraySizes; i++)
         {
             _allTarPoints[i] = TarPoint.invalid;
-        }
 
-        var containerTransform = _pointContainer.transform;
-        _allPointTransforms = new TransformAccessArray(totalPointsPerMonger * mongerCount, JobsUtility.JobWorkerMaximumCount / 2);
-        _tarPoolEntries = new TarPoolEntry[totalPointsPerMonger * mongerCount];
-
-        for(int i = 0; i < _tarPoolEntries.Length; i++)
-        {
             var instance = Instantiate(pointPrefab, containerTransform);
-            _allPointTransforms[i] = instance.transform;
+            _allPointTransforms.Add(instance.transform);
 
             var entry = new TarPoolEntry
             {
-                isInPool = false,
                 tiedGameObject = instance,
-                poolIndex = i
+                poolIndex = i,
+                isInPool = true
             };
             _tarPoolEntries[i] = entry;
         }
@@ -96,7 +97,7 @@ public class MongerManager_Jobbified : MonoBehaviour
         }
     }
 
-    public TarPoint RequestTarPoint(Vector3 position)
+    public TarPoint RequestTarPoint(Vector3 position, out TarPoolEntry gameObjectForPoint)
     {
         TarPoint tarPoint = new TarPoint
         {
@@ -108,33 +109,25 @@ public class MongerManager_Jobbified : MonoBehaviour
         int index = _allTarPoints.IndexOf(TarPoint.invalid);
         tarPoint.managerIndex = index;
         _allTarPoints[index] = tarPoint;
+
+        gameObjectForPoint = _tarPoolEntries[index];
+        gameObjectForPoint.isInPool = false;
         return tarPoint;
     }
 
-    public void ReturnTarPoint(TarPoint tarPoint)
+    public void ReturnTarPoint(TarPoint tarPoint, TarPoolEntry gameObjectForPoint)
     {
         if (tarPoint.Equals(TarPoint.invalid))
             return;
 
+        if (tarPoint.managerIndex != gameObjectForPoint.poolIndex)
+            return;
+
         _allTarPoints[tarPoint.managerIndex] = TarPoint.invalid;
+        gameObjectForPoint.isInPool = true;
+        _tarPoolEntries[tarPoint.managerIndex] = gameObjectForPoint;
     }
 
-    public GameObject RequestPoint()
-    {
-        if(_pointPool.TryDequeue(out var point))
-        {
-            point.SetActive(true);
-            point.transform.localScale = Vector3.one;
-            return point;
-        }
-        return Instantiate(pointPrefab, _pointContainer.transform);
-    }
-
-    public void ReturnPoint(GameObject obj)
-    {
-        obj.SetActive(false);
-        _pointPool.Enqueue(obj);
-    }
 
     private void FixedUpdate()
     {
@@ -183,11 +176,37 @@ public class MongerManager_Jobbified : MonoBehaviour
         {
             using(_lifetimeAndScalingMarker.Auto())
             {
-                for(int i = 0; i < _mongerInstances.Count; i++)
+                JobHandle lifetimeJobHandle = default;
+                if(doLifetimeReduction)
                 {
-                    _mongerInstances[i].PointUpdate(deltaTime, doLifetimeReduction, doPointScaling);
+                    TrailPointLifetimeJob lifetimeJob = new TrailPointLifetimeJob
+                    {
+                        deltaTime = deltaTime,
+                        tarPoints = _allTarPoints
+                    };
+                    lifetimeJobHandle = lifetimeJob.Schedule(_arraySizes, _totalPointsPerMonger);
                 }
+
+                JobHandle pointScalingJobHandle = default;
+                if(doPointScaling)
+                {
+                    TrailPointVisualJob job = new TrailPointVisualJob
+                    {
+                        maxSize = new float3(1),
+                        tarPoints = _allTarPoints,
+                        totalLifetime = pointLifetime
+                    };
+                    pointScalingJobHandle = job.Schedule(_allPointTransforms, lifetimeJobHandle);
+                }
+
+                if (!pointScalingJobHandle.IsCompleted)
+                    pointScalingJobHandle.Complete();
             }
+        }
+
+        for(int i = 0; i < _mongerInstances.Count; i++)
+        {
+            _mongerInstances[i].UpdateFromManager();
         }
     }
 
@@ -212,13 +231,30 @@ public class MongerManager_Jobbified : MonoBehaviour
 
     }
 
+    internal TarPoint GetPoint(int managerIndex)
+    {
+        return _allTarPoints[managerIndex];
+    }
+
     /// <summary>
     /// NOT JOB SAFE
     /// </summary>
     public struct TarPoolEntry : IEquatable<TarPoolEntry>
     {
         public GameObject tiedGameObject;
-        public bool isInPool;
+        public bool isInPool
+        {
+            get => _isInPool;
+            set
+            {
+                if(_isInPool != value)
+                {
+                    _isInPool = value;
+                    tiedGameObject.SetActive(!value);
+                }
+            }
+        }
+        private bool _isInPool;
         public int poolIndex;
 
         public bool Equals(TarPoolEntry other)
