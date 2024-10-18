@@ -41,7 +41,7 @@ public class MongerManager_Jobbified : MonoBehaviour
     private float _physicsCheckStopwatch;
     private GameObject _pointContainer;
 
-    private GameObject[] _pooledPoints;
+    private TarPoolEntry[] _tarPoolEntries;
     private TransformAccessArray _allPointTransforms;
     private NativeArray<TarPoint> _allTarPoints;
 
@@ -59,13 +59,20 @@ public class MongerManager_Jobbified : MonoBehaviour
 
         var containerTransform = _pointContainer.transform;
         _allPointTransforms = new TransformAccessArray(totalPointsPerMonger * mongerCount, JobsUtility.JobWorkerMaximumCount / 2);
-        _pooledPoints = new GameObject[totalPointsPerMonger * mongerCount];
+        _tarPoolEntries = new TarPoolEntry[totalPointsPerMonger * mongerCount];
 
-        for(int i = 0; i < _pooledPoints.Length; i++)
+        for(int i = 0; i < _tarPoolEntries.Length; i++)
         {
             var instance = Instantiate(pointPrefab, containerTransform);
-            _pooledPoints[i] = instance;
             _allPointTransforms[i] = instance.transform;
+
+            var entry = new TarPoolEntry
+            {
+                isInPool = false,
+                tiedGameObject = instance,
+                poolIndex = i
+            };
+            _tarPoolEntries[i] = entry;
         }
     }
 
@@ -203,6 +210,21 @@ public class MongerManager_Jobbified : MonoBehaviour
         Gizmos.color = Color.yellow;
         Gizmos.DrawWireCube(transform.position, new Vector3(x, 10, y));
 
+    }
+
+    /// <summary>
+    /// NOT JOB SAFE
+    /// </summary>
+    public struct TarPoolEntry : IEquatable<TarPoolEntry>
+    {
+        public GameObject tiedGameObject;
+        public bool isInPool;
+        public int poolIndex;
+
+        public bool Equals(TarPoolEntry other)
+        {
+            return poolIndex == other.poolIndex;
+        }
     }
 
     public struct TarPoint : IEquatable<TarPoint>
