@@ -25,21 +25,6 @@ public class MongerTrail_Jobbified : MonoBehaviour
     public void SetManager(MongerManager_Jobbified manager)
     {
         _manager = manager;
-        _manager.AddMonger(this);
-    }
-
-    public void OnEnable()
-    {
-        if (!_manager)
-            return;
-
-        _manager.AddMonger(this);
-    }
-
-
-    public void OnDisable()
-    {
-        _manager.RemoveMonger(this);
     }
 
     public void UpdateTrail(float deltaTime)
@@ -68,52 +53,15 @@ public class MongerTrail_Jobbified : MonoBehaviour
             return;
         }
 
-        MongerManager_Jobbified.TarPoint tarPoint = _manager.RequestTarPoint(this, hit.point, hit.normal, out var poolEntry);
+        float yRot = UnityEngine.Random.Range(0, 360);
+        MongerManager_Jobbified.TarPoint tarPoint = _manager.RequestTarPoint(this, hit.point, hit.normal, yRot, out var poolEntry);
 
         var pointTransform = poolEntry.tiedGameObject.transform;
         pointTransform.up = hit.normal;
+        pointTransform.rotation *= Quaternion.Euler(0, yRot, 0);
         pointTransform.position = hit.point;
-        pointTransform.rotation = Quaternion.Euler(0, UnityEngine.Random.Range(0, 360), 0);
         _points.Add(tarPoint);
         _poolEntries.Add(poolEntry);
-    }
-
-    public void PhysicsCheck(float deltaTime)
-    {
-        if (_points.Count == 0)
-            return;
-
-        _ignoredObjects.Clear();
-        _ignoredObjects.Add(gameObject);
-
-        for (int i = _points.Count - 1; i >= 0; i--)
-        {
-            var point = _points[i];
-            var pointPos = point.worldPosition;
-
-
-            int totalOverlaps = Physics.RaycastNonAlloc(pointPos, point.normalDirection, _physicsHits, 1, _manager.physicsCheckMask, QueryTriggerInteraction.Collide);
-            for (int j = 0; j < totalOverlaps; j++)
-            {
-                var collider = _physicsHits[j].collider;
-                if (!collider.TryGetComponent<MongerTarDetector>(out var mtd))
-                {
-                    continue;
-                }
-
-                var mm = mtd.tiedMovement;
-
-                if (!mm)
-                    continue;
-
-
-                var collidedGameObject = mm.gameObject;
-                if (!_ignoredObjects.Contains(collidedGameObject))
-                {
-                    _ignoredObjects.Add(collidedGameObject);
-                }
-            }
-        }
     }
 
     internal void UpdateFromManager()

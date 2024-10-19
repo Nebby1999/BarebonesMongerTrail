@@ -1,11 +1,15 @@
 
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
+using System.Text;
+using System.Xml.Linq;
 using Unity.Collections;
 using Unity.Jobs;
 using Unity.Jobs.LowLevel.Unsafe;
 using Unity.Mathematics;
 using Unity.Profiling;
+using UnityEditor;
 using UnityEngine;
 using UnityEngine.Jobs;
 
@@ -14,7 +18,8 @@ public class MongerManager_Jobbified : MonoBehaviour
     public static MongerManager_Jobbified instance;
 
     static readonly ProfilerMarker _trailUpdateMarker = new ProfilerMarker(ProfilerCategory.Scripts, "MongerTrail_Jobbified.TrailUpdates");
-    static readonly ProfilerMarker _physicsChecksMarker = new ProfilerMarker(ProfilerCategory.Scripts, "MongerTrail_Jobbified.PhysicsChecks");
+    static readonly ProfilerMarker _physicsChecksPreJobMarker = new ProfilerMarker(ProfilerCategory.Scripts, "MongerTrail_Jobbified.PhysicsChecksPreJob");
+    static readonly ProfilerMarker _physicsChecksPostJobMarker = new ProfilerMarker(ProfilerCategory.Scripts, "MongerTrail_Jobbified.PhysicsChecksPostJob");
     static readonly ProfilerMarker _lifetimeAndScalingMarker = new ProfilerMarker(ProfilerCategory.Scripts, "MongerTrail_Jobbified.LifetimeAndScalings");
 
 
@@ -26,7 +31,6 @@ public class MongerManager_Jobbified : MonoBehaviour
     
     [Header("Spawning Settings")]
     public MongerTrail_Jobbified mongerPrefab;
-    public int mongerCount;
     public Vector2 spawnArea;
 
     [Header("Global Monger Data")]
@@ -44,101 +48,98 @@ public class MongerManager_Jobbified : MonoBehaviour
 
 
     private int _totalPointsPerMonger;
-    private int _arraySizes;
-    private TarPoolEntry[] _tarPoolEntries;
+    private int arraySizes => _mongerInstances.Count * _totalPointsPerMonger;
+    private List<TarPoolEntry> _tarPoolEntries;
     private TransformAccessArray _allPointTransforms;
-    private NativeArray<TarPoint> _allTarPoints;
-    private NativeList<RaycastCommand> _physicsChecksRaycastCommands;
-    private NativeHashMap<int, int> _mongerTarColliderIDToMockupMovementID;
-    private Dictionary<int, MockupMovement> _mockupMovementIDToMockupMovement;
-    private Dictionary<int, MongerTrail_Jobbified> _mongerTrailIDToMongerTrail;
+    private NativeList<TarPoint> _allTarPoints;
+    private NativeList<ManagerIndex> _tarPointPhysicsChecks;
 
-    private List<ManagerIndex> _tarPointPhysicsChecks;
     private List<int> _physicsChecksIgnoredObjectIDs = new List<int>();
+
+    private int GUI_addMongersCount = 1;
+
+    private int poolCounts;
+    private int currentPoolChildCount;
+    private GameObject currentPoolObject;
 
     private void Awake()
     {
         instance = this;
 
         _totalPointsPerMonger = Mathf.CeilToInt(pointLifetime) * 5;
-        _arraySizes = _totalPointsPerMonger * mongerCount;
-        _allTarPoints = new NativeArray<TarPoint>(_arraySizes, Allocator.Persistent);
-        _allPointTransforms = new TransformAccessArray(_arraySizes);
-        _physicsChecksRaycastCommands = new NativeList<RaycastCommand>(_arraySizes / 2, Allocator.Persistent);
-        _mongerTarColliderIDToMockupMovementID = new NativeHashMap<int, int>(1, Allocator.Persistent);
-        _mockupMovementIDToMockupMovement = new Dictionary<int, MockupMovement>();
-        _mongerTrailIDToMongerTrail = new Dictionary<int, MongerTrail_Jobbified>();
-        _tarPoolEntries = new TarPoolEntry[_arraySizes];
-        _tarPointPhysicsChecks = new List<ManagerIndex>(_arraySizes / 2);
+        _allTarPoints = new NativeList<TarPoint>(Allocator.Persistent);
+        _allPointTransforms = new TransformAccessArray(0);
+        _tarPointPhysicsChecks = new NativeList<ManagerIndex>(Allocator.Persistent);
+        _tarPoolEntries = new List<TarPoolEntry>();
 
-        int childrenInContainer = 0;
-        int containerCount = 0;
-        GameObject container = null;
-        for(int i = 0; i < _arraySizes; i++)
-        {
-            _allTarPoints[i] = TarPoint.invalid;
-
-            if(childrenInContainer >= _totalPointsPerMonger)
-            {
-                childrenInContainer = 0;
-                container = null;
-            }
-
-            if(!container)
-            {
-                container = new GameObject($"SplotchContainer{containerCount}");
-                containerCount++;
-            }
-            var instance = Instantiate(pointPrefab, container.transform);
-            childrenInContainer++;
-            _allPointTransforms.Add(instance.transform);
-
-            var entry = new TarPoolEntry(i)
-            {
-                tiedGameObject = instance,
-                isInPool = true
-            };
-            _tarPoolEntries[i] = entry;
-        }
     }
 
-    private void Start()
+    public TarPoint RequestTarPoint(MongerTrail_Jobbified owner, Vector3 position, Vector3 normalDirection, float yRotation, out TarPoolEntry gameObjectForPoint)
     {
-        var transform = this.transform;
-        float myX = transform.position.x;
-        float myZ = transform.position.z;
-
-        float halfAreaX = spawnArea.x / 2;
-        float halfAreaZ = spawnArea.y / 2;
-        for(int i = 0; i < mongerCount; i++)
-        {
-            float mongerPosX = UnityEngine.Random.Range(-halfAreaX, halfAreaX);
-            float mongerPosZ = UnityEngine.Random.Range(-halfAreaZ, halfAreaZ);
-
-            Vector3 spawnPos = new Vector3(mongerPosX + myX, 2, mongerPosZ + myZ);
-            var instance = Instantiate(mongerPrefab, spawnPos, Quaternion.identity, transform);
-            instance.SetManager(this);
-            _mongerInstances.Add(instance);
-        }
-    }
-
-    public TarPoint RequestTarPoint(MongerTrail_Jobbified owner, Vector3 position, Vector3 normalDirection, out TarPoolEntry gameObjectForPoint)
-    {
-        int index = _allTarPoints.IndexOf(TarPoint.invalid);
+        int index = GetFreeTarPointIndex();
         TarPoint tarPoint = new TarPoint(index)
         {
             pointLifetime = pointLifetime,
             totalLifetime = pointLifetime,
             normalDirection = normalDirection,
+            rotation = quaternion.EulerXYZ(0, yRotation, 0),
+            pointWidthDepth = new float2(5),
             remappedLifetime0to1 = 1,
             worldPosition = position,
             currentOwnerInstanceID = owner.GetInstanceID()
         };
         _allTarPoints[index] = tarPoint;
 
-        gameObjectForPoint = _tarPoolEntries[index];
+        gameObjectForPoint = GetTarPoolEntryAtIndex(index);
         gameObjectForPoint.isInPool = false;
         return tarPoint;
+    }
+
+    private int GetFreeTarPointIndex()
+    {
+        int index = _allTarPoints.IndexOf(TarPoint.invalid);
+        if(index == -1)
+        {
+            _allTarPoints.Add(TarPoint.invalid);
+            index = _allTarPoints.Length - 1;
+        }
+        return index;
+    }
+
+    private TarPoolEntry GetTarPoolEntryAtIndex(int index)
+    {
+        if(index >= _tarPoolEntries.Count)
+        {
+            _tarPoolEntries.Add(new TarPoolEntry(index));
+            index = _tarPoolEntries.Count - 1;
+        }
+
+        var entry = _tarPoolEntries[index];
+        if(!entry.tiedGameObject)
+        {
+            if (currentPoolChildCount >= _totalPointsPerMonger)
+            {
+                currentPoolChildCount = 0;
+                currentPoolObject = null;
+            }
+            if (!currentPoolObject)
+            {
+                currentPoolObject = new GameObject($"SplotchContainer{poolCounts}");
+                poolCounts++;
+            }
+
+            var instance = Instantiate(pointPrefab, currentPoolObject.transform);
+            currentPoolChildCount++;
+            _allPointTransforms.Add(instance.transform);
+
+            entry = new TarPoolEntry(index)
+            {
+                tiedGameObject = instance,
+                isInPool = true
+            };
+            _tarPoolEntries.Insert(index, entry);
+        }
+        return entry;
     }
 
     public void ReturnTarPoint(TarPoint tarPoint, TarPoolEntry gameObjectForPoint)
@@ -155,41 +156,16 @@ public class MongerManager_Jobbified : MonoBehaviour
         _tarPoolEntries[(int)tarPoint.managerIndex] = gameObjectForPoint;
     }
 
-    public void AddDetector(MongerTarDetector detector)
-    {
-        var colliderID = detector.boxCollider.GetInstanceID();
-        var mockupMovementID = detector.tiedMovement.GetInstanceID();
-
-        _mockupMovementIDToMockupMovement.Add(mockupMovementID, detector.tiedMovement);
-        _mongerTarColliderIDToMockupMovementID.Add(colliderID, mockupMovementID);
-    }
-
-    public void AddMonger(MongerTrail_Jobbified monger)
-    {
-        _mongerTrailIDToMongerTrail.Add(monger.GetInstanceID(), monger);
-    }
-
-    public void RemoveMonger(MongerTrail_Jobbified monger)
-    {
-        _mongerTrailIDToMongerTrail.Remove(monger.GetInstanceID());
-    }
-
-    public void RemoveDetector(MongerTarDetector detector)
-    {
-        var colliderID = detector.boxCollider.GetInstanceID();
-        var mockupMovementID = detector.tiedMovement.GetInstanceID();
-
-        _mockupMovementIDToMockupMovement.Remove(mockupMovementID);
-        _mongerTarColliderIDToMockupMovementID.Remove(colliderID);
-    }
-
-
     private void FixedUpdate()
     {
+        if (_mongerInstances.Count == 0)
+            return;
+
         bool shouldPhysicsCheck = false;
         bool shouldTrailUpdate = false;
-        NativeArray<RaycastHit> hitBuffer = default;
-        NativeArray<int> processHitBuffer_output = default;
+        NativeArray<BoxcastCommand> physicsChecksBoxcastCommands = default;
+        NativeArray<RaycastHit> physicsChecksHitBuffer = default;
+        NativeList<ManagerIndex> pointsThatCollidedWithSomething = default;
 
         JobHandle dependency = default;
         float deltaTime = Time.fixedDeltaTime;
@@ -212,6 +188,7 @@ public class MongerManager_Jobbified : MonoBehaviour
         {
             using(_trailUpdateMarker.Auto())
             {
+
                 for(int i = 0; i < _mongerInstances.Count; i++)
                 {
                     _mongerInstances[i].UpdateTrail(deltaTime);
@@ -221,45 +198,35 @@ public class MongerManager_Jobbified : MonoBehaviour
 
         if(shouldPhysicsCheck)
         {
-            using(_physicsChecksMarker.Auto())
+            using(_physicsChecksPreJobMarker.Auto())
             {
                 _tarPointPhysicsChecks.Clear();
-                _physicsChecksRaycastCommands.Clear();
-                for(int i = 0; i < _arraySizes; i++)
+                physicsChecksBoxcastCommands = new NativeArray<BoxcastCommand>(arraySizes, Allocator.TempJob);
+                //Write the boxcasts
+                dependency = new WriteBoxcastCommandsJob
                 {
-                    var point = _allTarPoints[i];
-                    if (!point.isValid)
-                    {
-                        continue;
-                    }
-                    _tarPointPhysicsChecks.Add(point.managerIndex);
-                    var command = new RaycastCommand(point.worldPosition, point.normalDirection, 1, physicsCheckMask, 5);
-                    _physicsChecksRaycastCommands.Add(command);
-                }
+                    output = physicsChecksBoxcastCommands,
+                    physicsScene = Physics.defaultPhysicsScene,
+                    physicsCheckMask = physicsCheckMask,
+                    tarPoints = _allTarPoints
+                }.Schedule(_allTarPoints.Length, _totalPointsPerMonger, dependency);
 
-                //The length is the total indvidual raycast commands, times 5, since the command has a max of 5 hits
-                hitBuffer = new NativeArray<RaycastHit>(_physicsChecksRaycastCommands.Length * 5, Allocator.TempJob);
+                //Check for any colliders the points have collided with.
+                physicsChecksHitBuffer = new NativeArray<RaycastHit>(physicsChecksBoxcastCommands.Length, Allocator.TempJob);
+                dependency = BoxcastCommand.ScheduleBatch(physicsChecksBoxcastCommands, physicsChecksHitBuffer, _totalPointsPerMonger, dependency);
 
-                //Schedule it.
-                dependency = RaycastCommand.ScheduleBatch(_physicsChecksRaycastCommands, hitBuffer, _totalPointsPerMonger, dependency);
-
-                //We need to process the hits now, we'll just care for the hit MockupMovements.
-
-                //The output contains the mockup movement IDs, this way we can directly map raycasthit to the proper mockup movement, then iterate properly thru the results.
-                processHitBuffer_output = new NativeArray<int>(hitBuffer.Length, Allocator.TempJob);
-
-                //Schedule the job that will transform all the raycast hit into mockup movement IDs.
-                dependency = new ProcessHitBufferJob
+                //We should filter out the points that didnt hit anything.
+                pointsThatCollidedWithSomething = new NativeList<ManagerIndex>(_tarPointPhysicsChecks.Capacity / 2, Allocator.TempJob);
+                dependency = new FilterManagerIndicesThatDidntCollideWithAnythingJob
                 {
-                    colliderIDToMockupMovementID = _mongerTarColliderIDToMockupMovementID,
-                    numberOfRaycastToProcess = 5,
-                    output = processHitBuffer_output,
-                    raycastHits = hitBuffer
-                }.Schedule(_physicsChecksRaycastCommands.Length, _totalPointsPerMonger, dependency);
+                    input = _tarPointPhysicsChecks,
+                    output = pointsThatCollidedWithSomething.AsParallelWriter(),
+                    raycastHits = physicsChecksHitBuffer
+                }.Schedule(_tarPointPhysicsChecks.Length, _totalPointsPerMonger, dependency);
             }
         }
 
-        if(doLifetimeReduction || doPointScaling)
+        if((doLifetimeReduction || doPointScaling) && _allPointTransforms.length > 0)
         {
             using(_lifetimeAndScalingMarker.Auto())
             {
@@ -270,7 +237,7 @@ public class MongerManager_Jobbified : MonoBehaviour
                         deltaTime = deltaTime,
                         tarPoints = _allTarPoints
                     };
-                    dependency = lifetimeJob.Schedule(_arraySizes, _totalPointsPerMonger, dependency);
+                    dependency = lifetimeJob.Schedule(_allPointTransforms.length, _totalPointsPerMonger, dependency);
                 }
 
                 if(doPointScaling)
@@ -291,48 +258,25 @@ public class MongerManager_Jobbified : MonoBehaviour
 
         if(shouldPhysicsCheck)
         {
-            for (int i = 0; i < _tarPointPhysicsChecks.Count; i++)
+            using(_physicsChecksPostJobMarker.Auto())
             {
-
-                var pointManager = _tarPointPhysicsChecks[i];
-                var point = GetPoint(pointManager);
-
-                if (!point.isValid) //This shouldnt happen.
-                    continue;
-
-                if (!_mongerTrailIDToMongerTrail.TryGetValue(point.currentOwnerInstanceID, out var mongerTrailThatOwnsThePoint))
+                for(int i = 0; i < pointsThatCollidedWithSomething.Length; i++)
                 {
-                    continue;
-                }
+                    var managerIndex = pointsThatCollidedWithSomething[i];
+                    var collider = physicsChecksHitBuffer[(int)managerIndex].collider;
 
-                var startIndex = i * 5;
-                for(int j = 0; j < 5; j++)
-                {
-                    int outputIndex = startIndex + j;
-                    var id = processHitBuffer_output[outputIndex];
-                    if(id == 0) //we've hit the last one of our point.
-                    {
-                        break;
-                    }
-
-                    if(_physicsChecksIgnoredObjectIDs.Contains(id))
+                    if (!collider.TryGetComponent<MockupMovement>(out var mm))
                     {
                         continue;
                     }
 
-                    if(!_mockupMovementIDToMockupMovement.TryGetValue(id, out var mockupMovement))
-                    {
-                        continue;
-                    }
+                    var component = mm;
 
-                    if (mockupMovement == mongerTrailThatOwnsThePoint.mockupMovement)
-                    {
-                        _physicsChecksIgnoredObjectIDs.Add(id);
+                    if (!component)
                         continue;
-                    }
 
-                    mockupMovement.number -= mongerTrailThatOwnsThePoint.damage;
-                    _physicsChecksIgnoredObjectIDs.Add(id);
+
+                    var collidedGameObject = mm.gameObject;
                 }
             }
         }
@@ -342,11 +286,14 @@ public class MongerManager_Jobbified : MonoBehaviour
             _mongerInstances[i].UpdateFromManager();
         }
 
-        if (hitBuffer.IsCreated)
-            hitBuffer.Dispose();
+        if (physicsChecksHitBuffer.IsCreated)
+            physicsChecksHitBuffer.Dispose();
 
-        if (processHitBuffer_output.IsCreated)
-            processHitBuffer_output.Dispose();
+        if (pointsThatCollidedWithSomething.IsCreated)
+            pointsThatCollidedWithSomething.Dispose();
+
+        if (physicsChecksBoxcastCommands.IsCreated)
+            physicsChecksBoxcastCommands.Dispose();
     }
 
 
@@ -358,11 +305,9 @@ public class MongerManager_Jobbified : MonoBehaviour
         if(_allPointTransforms.isCreated)
             _allPointTransforms.Dispose();
 
-        if (_physicsChecksRaycastCommands.IsCreated)
-            _physicsChecksRaycastCommands.Dispose();
 
-        if (_mongerTarColliderIDToMockupMovementID.IsCreated)
-            _mongerTarColliderIDToMockupMovementID.Dispose();
+        if (_tarPointPhysicsChecks.IsCreated)
+            _tarPointPhysicsChecks.Dispose();
 
         instance = null;
     }
@@ -374,7 +319,40 @@ public class MongerManager_Jobbified : MonoBehaviour
 
         Gizmos.color = Color.yellow;
         Gizmos.DrawWireCube(transform.position, new Vector3(x, 10, y));
+    }
 
+    private void OnGUI()
+    {
+        GUILayout.BeginHorizontal("box");
+        if (GUILayout.Button("Add"))
+        {
+            var transform = this.transform;
+            float myX = transform.position.x;
+            float myZ = transform.position.z;
+
+            float halfAreaX = spawnArea.x / 2;
+            float halfAreaZ = spawnArea.y / 2;
+            for (int i = 0; i < GUI_addMongersCount; i++)
+            {
+                float mongerPosX = UnityEngine.Random.Range(-halfAreaX, halfAreaX);
+                float mongerPosZ = UnityEngine.Random.Range(-halfAreaZ, halfAreaZ);
+
+                Vector3 spawnPos = new Vector3(mongerPosX + myX, 2, mongerPosZ + myZ);
+                var instance = Instantiate(mongerPrefab, spawnPos, Quaternion.identity, transform);
+                instance.SetManager(this);
+                _mongerInstances.Add(instance);
+            }
+        }
+        string s = GUILayout.TextField(GUI_addMongersCount.ToString());
+        if(GUI.changed)
+        {
+            if(int.TryParse(s, out GUI_addMongersCount))
+            {
+
+            }
+        }
+        GUILayout.Label("Monger(s)");
+        GUILayout.EndHorizontal();
     }
 
     internal TarPoint GetPoint(ManagerIndex managerIndex)
@@ -423,6 +401,8 @@ public class MongerManager_Jobbified : MonoBehaviour
 
         public float3 worldPosition;
         public float3 normalDirection;
+        public quaternion rotation;
+        public float2 pointWidthDepth;
         public float pointLifetime;
         public float totalLifetime;
         public float remappedLifetime0to1;
@@ -441,6 +421,8 @@ public class MongerManager_Jobbified : MonoBehaviour
             _managerIndex = (ManagerIndex)index;
             worldPosition = float3.zero;
             normalDirection = float3.zero;
+            rotation = quaternion.identity;
+            pointWidthDepth = float2.zero;
             pointLifetime = 0;
             totalLifetime = 0;
             remappedLifetime0to1 = 0;

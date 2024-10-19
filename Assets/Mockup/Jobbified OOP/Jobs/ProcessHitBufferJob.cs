@@ -1,36 +1,24 @@
+using Unity.Burst;
 using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
 using Unity.Jobs;
+using Unity.Mathematics;
 using UnityEngine;
 
-public struct ProcessHitBufferJob : IJobParallelFor
+[BurstCompile(OptimizeFor = OptimizeFor.Performance)]
+public struct WriteBoxcastCommandsJob : IJobParallelFor
 {
-    public int numberOfRaycastToProcess;
-
-    [ReadOnly]
-    public NativeArray<RaycastHit> raycastHits;
-
-    [ReadOnly]
-    public NativeHashMap<int, int> colliderIDToMockupMovementID;
-
-    public NativeArray<int> output;
-
+    public PhysicsScene physicsScene;
+    public LayerMask physicsCheckMask;
+    public NativeArray<MongerManager_Jobbified.TarPoint> tarPoints;
+    public NativeArray<BoxcastCommand> output;
     public void Execute(int index)
     {
-        int startIndex = index * numberOfRaycastToProcess;
-        for(int num = 0; num < numberOfRaycastToProcess; num++)
-        {
-            int raycastIndex = startIndex + num;
-            var hit = raycastHits[raycastIndex];
+        var tarPoint = tarPoints[index];
 
-            if (hit.colliderInstanceID == 0)//the hit itself is null collider, so break early since it means the other entries are garbage data.
-                break;
+        var xy = tarPoint.pointWidthDepth * tarPoint.remappedLifetime0to1;
+        var command = new BoxcastCommand(physicsScene, tarPoint.worldPosition, new float3(xy.x / 2, 0.5f, xy.y / 2), tarPoint.rotation, tarPoint.normalDirection, 1, physicsCheckMask);
 
-            if(!colliderIDToMockupMovementID.TryGetValue(hit.colliderInstanceID, out var mockupMovementID))
-            {
-                continue;
-            }
-
-            output[raycastIndex] = mockupMovementID;
-        }
+        output[index] = command;
     }
 }

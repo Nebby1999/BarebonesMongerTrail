@@ -9,9 +9,7 @@ public class MongerTrail_OOP : MonoBehaviour
 {
     [NonSerialized]
     public new Transform transform;
-    private RaycastHit[] _physicsHits = new RaycastHit[5];
     private List<TarPoint> _points = new List<TarPoint>();
-    private List<GameObject> _ignoredObjects = new List<GameObject>();
 
     private MongerManager_OOP _manager;
     private int _managerIndex;
@@ -51,10 +49,12 @@ public class MongerTrail_OOP : MonoBehaviour
             return;
         }
 
+        Quaternion boxcastOrientation = Quaternion.Euler(0, UnityEngine.Random.Range(0, 360), 0);
         TarPoint tarPoint = new TarPoint
         {
             worldPosition = hit.point,
             normalDirection = hit.normal,
+            rotation = boxcastOrientation,
             pointLifetime = _manager.pointLifetime,
             totalLifetime = _manager.pointLifetime,
             pointWidthDepth = new Vector3(5, 5)
@@ -63,8 +63,8 @@ public class MongerTrail_OOP : MonoBehaviour
         var pointInstance = _manager.RequestPoint();
         var pointTransform = pointInstance.transform;
         pointTransform.up = hit.normal;
+        pointTransform.rotation *= boxcastOrientation;
         pointTransform.position = hit.point;
-        pointTransform.rotation = Quaternion.Euler(0, UnityEngine.Random.Range(0, 360), 0);
         tarPoint.pointTransform = pointTransform;
         _points.Add(tarPoint);
     }
@@ -74,36 +74,29 @@ public class MongerTrail_OOP : MonoBehaviour
         if (_points.Count == 0)
             return;
 
-        _ignoredObjects.Clear();
-        _ignoredObjects.Add(gameObject);
-
         for(int i = _points.Count - 1; i >= 0; i--)
         {
             var point = _points[i];
             var pointPos = point.worldPosition;
             var xy = Vector2.Lerp(Vector2.zero, point.pointWidthDepth, Util.Remap(point.pointLifetime, 0, point.totalLifetime, 0, 1));
 
-
-            int totalOverlaps = Physics.RaycastNonAlloc(pointPos, point.normalDirection, _physicsHits, 1, _manager.physicsCheckMask, QueryTriggerInteraction.Collide);
-            for (int j = 0; j < totalOverlaps; j++)
+            //Util.DrawBoxCastBox(pointPos, new Vector3(xy.x / 2, 0.5f, xy.y / 2), point.rotation, point.normalDirection, 1, Color.red);
+            if(Physics.BoxCast(pointPos, new Vector3(xy.x / 2, 0.5f, xy.y / 2), point.normalDirection, out var hit, point.rotation, 1, _manager.physicsCheckMask))
             {
-                var collider = _physicsHits[j].collider;
-                if(!collider.TryGetComponent<MongerTarDetector>(out var mtd))
+                var collider = hit.collider;
+                if (!collider.TryGetComponent<MockupMovement>(out var mm))
                 {
                     continue;
                 }
 
-                var mm = mtd.tiedMovement;
+                var component = mm;
 
-                if (!mm)
+                if (!component)
                     continue;
 
 
                 var collidedGameObject = mm.gameObject;
-                if(!_ignoredObjects.Contains(collidedGameObject))
-                {
-                    _ignoredObjects.Add(collidedGameObject);
-                }
+                //Debug.Log($"Trail of {gameObject}'s {i} point has collided with {collidedGameObject}");
             }
         }
     }
@@ -129,6 +122,7 @@ public class MongerTrail_OOP : MonoBehaviour
     {
         public Vector3 worldPosition;
         public Vector3 normalDirection;
+        public Quaternion rotation;
         public Vector2 pointWidthDepth;
         public float pointLifetime;
         public float totalLifetime;
