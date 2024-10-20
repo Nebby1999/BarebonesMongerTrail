@@ -277,7 +277,7 @@ public class MongerManager_Jobbified : MonoBehaviour
                         deltaTime = deltaTime,
                         tarPoints = _allTarPoints,
                     };
-                    dependency = lifetimeJob.Schedule(allTarPoints, innerloopBatchCount, dependency);
+                    dependency = lifetimeJob.Schedule(allTarPoints, totalPointsPerMonger, dependency);
                 }
 
                 if(doPointScaling)
@@ -317,7 +317,10 @@ public class MongerManager_Jobbified : MonoBehaviour
 
 
                     var collidedGameObject = mm.gameObject;
-                    Debug.Log($"{_instanceIDToMonger[GetPoint(managerIndex).currentOwnerInstanceID].gameObject}'s point is colliding with {mm.gameObject}");
+                    var mongerTrailThtOwnsThePointThatCollidedWithSomething = _instanceIDToMonger[GetPoint(managerIndex).currentOwnerInstanceID].gameObject;
+
+                    if (collidedGameObject == mongerTrailThtOwnsThePointThatCollidedWithSomething)
+                        continue;
                 }
             }
         }
@@ -393,6 +396,7 @@ public class MongerManager_Jobbified : MonoBehaviour
 
                 Vector3 spawnPos = new Vector3(mongerPosX + myX, 2, mongerPosZ + myZ);
                 var instance = Instantiate(mongerPrefab, spawnPos, Quaternion.identity, transform);
+                instance.name += _mongerInstances.Count;
                 instance.SetManager(this);
             }
         }

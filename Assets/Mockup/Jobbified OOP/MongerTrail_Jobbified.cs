@@ -14,7 +14,6 @@ public class MongerTrail_Jobbified : MonoBehaviour
     public MockupMovement mockupMovement;
     private RaycastHit[] _physicsHits = new RaycastHit[5];
     public NativeList<MongerManager_Jobbified.TarPoint> points;
-    private List<MongerManager_Jobbified.TarPoint> _points = new List<MongerManager_Jobbified.TarPoint>();
     private List<MongerManager_Jobbified.TarPoolEntry> _poolEntries = new List<MongerManager_Jobbified.TarPoolEntry>();
     private List<GameObject> _ignoredObjects = new List<GameObject>();
 
@@ -42,7 +41,7 @@ public class MongerTrail_Jobbified : MonoBehaviour
 
     private void OnDisable()
     {
-        for (int i = _points.Count - 1; i >= 0; i--)
+        for (int i = points.Length - 1; i >= 0; i--)
         {
             RemovePoint(i);
         }
@@ -58,7 +57,7 @@ public class MongerTrail_Jobbified : MonoBehaviour
 
     public void UpdateTrail(float deltaTime)
     {
-        while(_points.Count > 0 && points[0].pointLifetime <= 0)
+        while(points.Length > 0 && points[0].pointLifetime <= 0)
         {
             RemovePoint(0);
         }
