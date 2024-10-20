@@ -46,7 +46,7 @@ public class MongerManager_Jobbified : MonoBehaviour
     private float _trailUpdateStopwatch;
     private float _physicsCheckStopwatch;
 
-
+    public int totalPointsPerMonger => _totalPointsPerMonger;
     private int _totalPointsPerMonger;
     private List<TarPoolEntry> _tarPoolEntries;
     private TransformAccessArray _allPointTransforms;
@@ -54,13 +54,11 @@ public class MongerManager_Jobbified : MonoBehaviour
     private NativeQueue<int> _invalidTarPointIndices;
     private NativeList<ManagerIndex> _activeTarPoints;
 
-    private List<int> _physicsChecksIgnoredObjectIDs = new List<int>();
+    private int _GUI_addMongersCount = 1;
 
-    private int GUI_addMongersCount = 1;
-
-    private int poolCounts;
-    private int currentPoolChildCount;
-    private GameObject currentPoolObject;
+    private int _poolCounts;
+    private int _currentPoolChildCount;
+    private GameObject _currentPoolObject;
 
     private void Awake()
     {
@@ -129,19 +127,19 @@ public class MongerManager_Jobbified : MonoBehaviour
         var entry = _tarPoolEntries[index];
         if (!entry.tiedGameObject)
         {
-            if (currentPoolChildCount >= _totalPointsPerMonger)
+            if (_currentPoolChildCount >= _totalPointsPerMonger)
             {
-                currentPoolChildCount = 0;
-                currentPoolObject = null;
+                _currentPoolChildCount = 0;
+                _currentPoolObject = null;
             }
-            if (!currentPoolObject)
+            if (!_currentPoolObject)
             {
-                currentPoolObject = new GameObject($"SplotchContainer{poolCounts}");
-                poolCounts++;
+                _currentPoolObject = new GameObject($"SplotchContainer{_poolCounts}");
+                _poolCounts++;
             }
 
-            var instance = Instantiate(pointPrefab, currentPoolObject.transform);
-            currentPoolChildCount++;
+            var instance = Instantiate(pointPrefab, _currentPoolObject.transform);
+            _currentPoolChildCount++;
             _allPointTransforms.Add(instance.transform);
 
             entry = new TarPoolEntry(index)
@@ -320,10 +318,17 @@ public class MongerManager_Jobbified : MonoBehaviour
             }
         }
 
-        for(int i = 0; i < _mongerInstances.Count; i++)
+        NativeArray<JobHandle> updateFromManagerHandles = new NativeArray<JobHandle>(_mongerInstances.Count, Allocator.Temp);
+        for (int i = 0; i < _mongerInstances.Count; i++)
         {
-            _mongerInstances[i].UpdateFromManager();
+            var mongerInstance = _mongerInstances[i];
+            updateFromManagerHandles[i] = new UpdateFromManagerJob
+            {
+                allTarPoints = _allTarPoints,
+                myTarPoints = mongerInstance.points
+            }.Schedule(mongerInstance.points.Length, default);
         }
+        JobHandle.CompleteAll(updateFromManagerHandles);
 
         if (physicsChecksHitBuffer.IsCreated)
             physicsChecksHitBuffer.Dispose();
@@ -333,6 +338,9 @@ public class MongerManager_Jobbified : MonoBehaviour
 
         if (physicsChecksBoxcastCommands.IsCreated)
             physicsChecksBoxcastCommands.Dispose();
+
+        if (updateFromManagerHandles.IsCreated)
+            updateFromManagerHandles.Dispose();
     }
 
 
@@ -374,7 +382,7 @@ public class MongerManager_Jobbified : MonoBehaviour
 
             float halfAreaX = spawnArea.x / 2;
             float halfAreaZ = spawnArea.y / 2;
-            for (int i = 0; i < GUI_addMongersCount; i++)
+            for (int i = 0; i < _GUI_addMongersCount; i++)
             {
                 float mongerPosX = UnityEngine.Random.Range(-halfAreaX, halfAreaX);
                 float mongerPosZ = UnityEngine.Random.Range(-halfAreaZ, halfAreaZ);
@@ -384,10 +392,10 @@ public class MongerManager_Jobbified : MonoBehaviour
                 instance.SetManager(this);
             }
         }
-        string s = GUILayout.TextField(GUI_addMongersCount.ToString());
+        string s = GUILayout.TextField(_GUI_addMongersCount.ToString());
         if(GUI.changed)
         {
-            if(int.TryParse(s, out GUI_addMongersCount))
+            if(int.TryParse(s, out _GUI_addMongersCount))
             {
 
             }
