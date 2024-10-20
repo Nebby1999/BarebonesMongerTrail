@@ -42,6 +42,7 @@ public class MongerManager_Jobbified : MonoBehaviour
     public float timeBetweenPhysicsChecks;
     public LayerMask physicsCheckMask;
 
+    private Dictionary<int, MongerTrail_Jobbified> _instanceIDToMonger = new Dictionary<int, MongerTrail_Jobbified>();
     private List<MongerTrail_Jobbified> _mongerInstances = new List<MongerTrail_Jobbified>();
     private float _trailUpdateStopwatch;
     private float _physicsCheckStopwatch;
@@ -75,11 +76,13 @@ public class MongerManager_Jobbified : MonoBehaviour
     public void AddMonger(MongerTrail_Jobbified trail)
     {
         _mongerInstances.Add(trail);
+        _instanceIDToMonger.Add(trail.GetInstanceID(), trail);
     }
 
     public void RemoveMonger(MongerTrail_Jobbified trail)
     {
         _mongerInstances.Remove(trail);
+        _instanceIDToMonger.Remove(trail.GetInstanceID());
     }
     public TarPoint RequestTarPoint(MongerTrail_Jobbified owner, Vector3 position, Vector3 normalDirection, float yRotation, out TarPoolEntry gameObjectForPoint)
     {
@@ -314,6 +317,7 @@ public class MongerManager_Jobbified : MonoBehaviour
 
 
                     var collidedGameObject = mm.gameObject;
+                    Debug.Log($"{_instanceIDToMonger[GetPoint(managerIndex).currentOwnerInstanceID].gameObject}'s point is colliding with {mm.gameObject}");
                 }
             }
         }
