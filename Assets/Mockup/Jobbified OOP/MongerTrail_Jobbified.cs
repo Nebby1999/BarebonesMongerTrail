@@ -17,6 +17,7 @@ public class MongerTrail_Jobbified : MonoBehaviour
     private List<GameObject> _ignoredObjects = new List<GameObject>();
 
     private MongerManager_Jobbified _manager;
+    private int _myIndex;
 
     private void Awake()
     {
@@ -25,6 +26,25 @@ public class MongerTrail_Jobbified : MonoBehaviour
     public void SetManager(MongerManager_Jobbified manager)
     {
         _manager = manager;
+        manager.AddMonger(this);
+    }
+
+    private void OnEnable()
+    {
+        if(_manager && _myIndex == -1)
+        {
+            _manager.AddMonger(this);
+        }
+    }
+
+    private void OnDisable()
+    {
+        for (int i = _points.Count - 1; i >= 0; i--)
+        {
+            RemovePoint(i);
+        }
+
+        _manager.RemoveMonger(this);
     }
 
     public void UpdateTrail(float deltaTime)

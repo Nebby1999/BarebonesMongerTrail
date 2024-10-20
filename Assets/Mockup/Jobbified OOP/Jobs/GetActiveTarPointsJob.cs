@@ -1,7 +1,9 @@
+using Unity.Burst;
 using Unity.Collections;
 using Unity.Jobs;
 using UnityEngine.Video;
 
+[BurstCompile(OptimizeFor = OptimizeFor.Performance)]
 public struct GetActiveTarPointsJob : IJobParallelFor
 {
     public NativeArray<MongerManager_Jobbified.TarPoint> allTarPoints;

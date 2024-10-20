@@ -48,7 +48,6 @@ public class MongerManager_Jobbified : MonoBehaviour
 
 
     private int _totalPointsPerMonger;
-    private int arraySizes => _mongerInstances.Count * _totalPointsPerMonger;
     private List<TarPoolEntry> _tarPoolEntries;
     private TransformAccessArray _allPointTransforms;
     private NativeList<TarPoint> _allTarPoints;
@@ -71,9 +70,17 @@ public class MongerManager_Jobbified : MonoBehaviour
         _allPointTransforms = new TransformAccessArray(0);
         _activeTarPoints = new NativeList<ManagerIndex>(Allocator.Persistent);
         _tarPoolEntries = new List<TarPoolEntry>();
-
     }
 
+    public void AddMonger(MongerTrail_Jobbified trail)
+    {
+        _mongerInstances.Add(trail);
+    }
+
+    public void RemoveMonger(MongerTrail_Jobbified trail)
+    {
+        _mongerInstances.Remove(trail);
+    }
     public TarPoint RequestTarPoint(MongerTrail_Jobbified owner, Vector3 position, Vector3 normalDirection, float yRotation, out TarPoolEntry gameObjectForPoint)
     {
         int index = GetFreeTarPointIndex();
@@ -167,6 +174,7 @@ public class MongerManager_Jobbified : MonoBehaviour
         if (_mongerInstances.Count == 0)
             return;
 
+        int allTarPoints = 0;
         bool shouldPhysicsCheck = false;
         bool shouldTrailUpdate = false;
         NativeArray<BoxcastCommand> physicsChecksBoxcastCommands = default;
@@ -202,18 +210,22 @@ public class MongerManager_Jobbified : MonoBehaviour
             }
         }
 
+        allTarPoints = _allTarPoints.Length;
         //Our jobs should only affect tar points who's indices are not invalid. these active points are also used on the lifetime and size jobs so we need to run it each fixed update. This is done because some points may be allocated in memory but not used (IE: a monger that spawned them was destroyed)
         //Unlike all other jobs, we need to complete this immediatly, since we need to know the length of the points we should modify prior to scheduling the actual heavy lifting jobs.
         _activeTarPoints.Clear();
-        if(_activeTarPoints.Capacity <= _allTarPoints.Length) //Ensure we have enough capacity prior to using the parallel writer.
+        if(_activeTarPoints.Capacity <= allTarPoints) //Ensure we have enough capacity prior to using the parallel writer.
         {
-            _activeTarPoints.SetCapacity(_allTarPoints.Length);
+            _activeTarPoints.SetCapacity(allTarPoints);
         }
+
         new GetActiveTarPointsJob
         {
             activePoints = _activeTarPoints.AsParallelWriter(),
             allTarPoints = _allTarPoints,
-        }.Schedule(_allTarPoints.Length, _totalPointsPerMonger, dependency).Complete();
+        }.Schedule(allTarPoints, _totalPointsPerMonger, dependency).Complete();
+
+        int innerloopBatchCount = _activeTarPoints.Length / _mongerInstances.Count;
 
         if(shouldPhysicsCheck)
         {
@@ -228,11 +240,11 @@ public class MongerManager_Jobbified : MonoBehaviour
                     physicsScene = Physics.defaultPhysicsScene,
                     physicsCheckMask = physicsCheckMask,
                     tarPoints = _allTarPoints
-                }.Schedule(_activeTarPoints.Length, _totalPointsPerMonger, dependency);
+                }.Schedule(_activeTarPoints.Length, innerloopBatchCount, dependency);
 
                 //Check for any colliders the points have collided with.
                 physicsChecksHitBuffer = new NativeArray<RaycastHit>(physicsChecksBoxcastCommands.Length, Allocator.TempJob);
-                dependency = BoxcastCommand.ScheduleBatch(physicsChecksBoxcastCommands, physicsChecksHitBuffer, _totalPointsPerMonger, dependency);
+                dependency = BoxcastCommand.ScheduleBatch(physicsChecksBoxcastCommands, physicsChecksHitBuffer, innerloopBatchCount, dependency);
 
                 //We should filter out the points that didnt hit anything.
                 pointsThatCollidedWithSomething = new NativeList<ManagerIndex>(_activeTarPoints.Capacity / 2, Allocator.TempJob);
@@ -241,7 +253,7 @@ public class MongerManager_Jobbified : MonoBehaviour
                     input = _allTarPoints,
                     output = pointsThatCollidedWithSomething.AsParallelWriter(),
                     raycastHits = physicsChecksHitBuffer
-                }.Schedule(_activeTarPoints.Length, _totalPointsPerMonger, dependency);
+                }.Schedule(_activeTarPoints.Length, innerloopBatchCount, dependency);
             }
         }
 
@@ -255,9 +267,8 @@ public class MongerManager_Jobbified : MonoBehaviour
                     {
                         deltaTime = deltaTime,
                         tarPoints = _allTarPoints,
-                        activeTarPoints = _activeTarPoints,
                     };
-                    dependency = lifetimeJob.Schedule(_activeTarPoints.Length, _totalPointsPerMonger, dependency);
+                    dependency = lifetimeJob.Schedule(allTarPoints, innerloopBatchCount, dependency);
                 }
 
                 if(doPointScaling)
@@ -267,7 +278,6 @@ public class MongerManager_Jobbified : MonoBehaviour
                         maxSize = new float3(1),
                         tarPoints = _allTarPoints,
                         totalLifetime = pointLifetime,
-                        activeTarPoints = _activeTarPoints
                     };
                     dependency = job.Schedule(_allPointTransforms, dependency);
                 }
@@ -361,7 +371,6 @@ public class MongerManager_Jobbified : MonoBehaviour
                 Vector3 spawnPos = new Vector3(mongerPosX + myX, 2, mongerPosZ + myZ);
                 var instance = Instantiate(mongerPrefab, spawnPos, Quaternion.identity, transform);
                 instance.SetManager(this);
-                _mongerInstances.Add(instance);
             }
         }
         string s = GUILayout.TextField(GUI_addMongersCount.ToString());
@@ -403,6 +412,12 @@ public class MongerManager_Jobbified : MonoBehaviour
             get => _isInPool;
             set
             {
+                if (!tiedGameObject)
+                {
+                    _isInPool = false;
+                    return;
+                }
+
                 if(_isInPool != value)
                 {
                     _isInPool = value;
