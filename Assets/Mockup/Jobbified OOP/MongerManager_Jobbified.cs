@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Reflection;
 using System.Text;
 using System.Xml.Linq;
 using Unity.Collections;
@@ -12,12 +13,15 @@ using Unity.Profiling;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.Jobs;
+using static MongerManager_Jobbified;
 
 public class MongerManager_Jobbified : MonoBehaviour
 {
     public static MongerManager_Jobbified instance;
 
-    static readonly ProfilerMarker _trailUpdateMarker = new ProfilerMarker(ProfilerCategory.Scripts, "MongerTrail_Jobbified.TrailUpdates");
+    static readonly ProfilerMarker _trailUpdateMarkerPreJob = new ProfilerMarker(ProfilerCategory.Scripts, "MongerTrail_Jobbified.TrailUpdatesPreJob");
+    static readonly ProfilerMarker _trailUpdateMarkerPostJob_RemovePoints = new ProfilerMarker(ProfilerCategory.Scripts, "MongerTrail_Jobbified.TrailUpdatesPostJob_RemovePoints");
+    static readonly ProfilerMarker _trailUpdateMarkerPostJob_AddPoints = new ProfilerMarker(ProfilerCategory.Scripts, "MongerTrail_Jobbified.TrailUpdatesPostJob_AddPoints");
     static readonly ProfilerMarker _physicsChecksPreJobMarker = new ProfilerMarker(ProfilerCategory.Scripts, "MongerTrail_Jobbified.PhysicsChecksPreJob");
     static readonly ProfilerMarker _physicsChecksPostJobMarker = new ProfilerMarker(ProfilerCategory.Scripts, "MongerTrail_Jobbified.PhysicsChecksPostJob");
     static readonly ProfilerMarker _lifetimeAndScalingMarker = new ProfilerMarker(ProfilerCategory.Scripts, "MongerTrail_Jobbified.LifetimeAndScalings");
@@ -44,6 +48,7 @@ public class MongerManager_Jobbified : MonoBehaviour
 
     private Dictionary<int, MongerTrail_Jobbified> _instanceIDToMonger = new Dictionary<int, MongerTrail_Jobbified>();
     private List<MongerTrail_Jobbified> _mongerInstances = new List<MongerTrail_Jobbified>();
+    private List<Transform> _mongerTransforms = new List<Transform>();
     private float _trailUpdateStopwatch;
     private float _physicsCheckStopwatch;
 
@@ -66,6 +71,7 @@ public class MongerManager_Jobbified : MonoBehaviour
         instance = this;
 
         _totalPointsPerMonger = Mathf.CeilToInt(pointLifetime) * 5;
+        _mongerTransforms = new List<Transform>();
         _tarPoolEntries = new List<TarPoolEntry>();
         _allPointTransforms = new TransformAccessArray(0);
         _allTarPoints = new NativeList<TarPoint>(Allocator.Persistent);
@@ -76,6 +82,7 @@ public class MongerManager_Jobbified : MonoBehaviour
     public void AddMonger(MongerTrail_Jobbified trail)
     {
         _mongerInstances.Add(trail);
+        _mongerTransforms.Add(trail.transform);
         _instanceIDToMonger.Add(trail.GetInstanceID(), trail);
     }
 
@@ -83,6 +90,29 @@ public class MongerManager_Jobbified : MonoBehaviour
     {
         _mongerInstances.Remove(trail);
         _instanceIDToMonger.Remove(trail.GetInstanceID());
+
+        for(int i = trail.points.Length - 1; i >= 0; i--)
+        {
+            ReturnTarPoint(trail.points[i]);
+        }
+        trail.points.Clear();
+
+        void ReturnTarPoint(TarPoint tarPoint)
+        {
+            if (!tarPoint.isValid)
+                return;
+
+            int index = (int)tarPoint.managerIndex;
+
+            TarPoolEntry gameObjectForPoint = _tarPoolEntries[index];
+            //This index is being freed, add it to the stash so another monger can use it.
+            _invalidTarPointIndices.Enqueue(index);
+            _allTarPoints[index] = TarPoint.invalid;
+            gameObjectForPoint.isInPool = true;
+            //Maybe remove at swap back?
+            _allPointTransforms[index] = null;
+            _tarPoolEntries[index] = gameObjectForPoint;
+        }
     }
     public TarPoint RequestTarPoint(MongerTrail_Jobbified owner, Vector3 position, Vector3 normalDirection, float yRotation, out TarPoolEntry gameObjectForPoint)
     {
@@ -96,7 +126,8 @@ public class MongerManager_Jobbified : MonoBehaviour
             pointWidthDepth = new float2(5),
             remappedLifetime0to1 = 1,
             worldPosition = position,
-            currentOwnerInstanceID = owner.GetInstanceID()
+            currentOwnerInstanceID = owner.GetInstanceID(),
+            ownerPointIndex = owner.points.Length
         };
         _allTarPoints[index] = tarPoint;
 
@@ -159,33 +190,17 @@ public class MongerManager_Jobbified : MonoBehaviour
         return entry;
     }
 
-    public void ReturnTarPoint(TarPoint tarPoint, TarPoolEntry gameObjectForPoint)
-    {
-        if (!tarPoint.isValid)
-            return;
-
-        if (tarPoint.managerIndex != gameObjectForPoint.managerPoolIndex)
-            return;
-
-        int index = (int)tarPoint.managerIndex;
-
-        //This index is being freed, add it to the stash so another monger can use it.
-        _invalidTarPointIndices.Enqueue(index);
-        _allTarPoints[index] = TarPoint.invalid;
-        gameObjectForPoint.isInPool = true;
-        //Maybe remove at swap back?
-        _allPointTransforms[index] = null;
-        _tarPoolEntries[index] = gameObjectForPoint;
-    }
-
     private void FixedUpdate()
     {
         if (_mongerInstances.Count == 0)
             return;
 
         int allTarPoints = 0;
-        bool shouldPhysicsCheck = false;
+        PhysicsScene physicsScene = default;
         bool shouldTrailUpdate = false;
+
+
+        bool shouldPhysicsCheck = false;
         NativeArray<BoxcastCommand> physicsChecksBoxcastCommands = default;
         NativeArray<RaycastHit> physicsChecksHitBuffer = default;
         NativeList<ManagerIndex> pointsThatCollidedWithSomething = default;
@@ -207,15 +222,86 @@ public class MongerManager_Jobbified : MonoBehaviour
             shouldTrailUpdate = true;
         }
 
-        //TODO: Jobify this process
+        if(shouldTrailUpdate || shouldPhysicsCheck)
+        {
+            physicsScene = Physics.defaultPhysicsScene;
+        }
+
         if(shouldTrailUpdate)
         {
-            using(_trailUpdateMarker.Auto())
+            TransformAccessArray mongerTransformsAccessArray = new TransformAccessArray(0);
+            mongerTransformsAccessArray.SetTransforms(_mongerTransforms.ToArray());
+            NativeArray<RaycastCommand> mongerRaycastCommands = default;
+            NativeArray<RaycastHit> mongerRaycastHitBuffer = default;
+            NativeList<TarPoint> pointsToKill = default;
+            JobHandle killTrailsHandle = default;
+            JobHandle mongerRaycastDependency = default;
+            using (_trailUpdateMarkerPreJob.Auto())
             {
+
+                pointsToKill = new NativeList<TarPoint>(_allTarPoints.Length, Allocator.TempJob);
+                KillPointsJob killTrailsJob = new KillPointsJob()
+                {
+                    pointsToKill = pointsToKill.AsParallelWriter(),
+                    points = _allTarPoints
+                };
+                killTrailsHandle = killTrailsJob.Schedule(_allTarPoints.Length, 4, killTrailsHandle);
+
+                ReturnKilledPointsJob returnKilledPointsJob = new ReturnKilledPointsJob
+                {
+                    allPoints = _allTarPoints,
+                    invalidPointIndices = _invalidTarPointIndices.AsParallelWriter(),
+                    killedPointsJob = pointsToKill.AsDeferredJobArray(),
+                };
+                killTrailsHandle = returnKilledPointsJob.Schedule(pointsToKill, 4, killTrailsHandle);
+
+                mongerRaycastDependency = default;
+                mongerRaycastCommands = new NativeArray<RaycastCommand>(_mongerInstances.Count, Allocator.TempJob);
+                WriteRaycastCommandsJob writeRaycastCommandsJob = new WriteRaycastCommandsJob
+                {
+                    output = mongerRaycastCommands,
+                    physicsScene = physicsScene,
+                    raycastLength = raycastLength,
+                    raycastMask = raycastMask
+                };
+                mongerRaycastDependency = writeRaycastCommandsJob.Schedule(mongerTransformsAccessArray, mongerRaycastDependency);
+
+                mongerRaycastHitBuffer = new NativeArray<RaycastHit>(_mongerInstances.Count, Allocator.TempJob);
+                mongerRaycastDependency = RaycastCommand.ScheduleBatch(mongerRaycastCommands, mongerRaycastHitBuffer, 4, mongerRaycastDependency);
+            }
+            using (_trailUpdateMarkerPostJob_RemovePoints.Auto())
+            {
+                killTrailsHandle.Complete();
+
+                for (int i = 0; i < pointsToKill.Length; i++)
+                {
+                    var point = pointsToKill[i];
+                    int managerIndex = (int)point.managerIndex;
+
+                    _allPointTransforms[managerIndex] = null;
+                    TarPoolEntry gameObjectForPoint = _tarPoolEntries[managerIndex];
+                    gameObjectForPoint.isInPool = true;
+                    _tarPoolEntries[managerIndex] = gameObjectForPoint;
+                    _instanceIDToMonger[point.currentOwnerInstanceID].points.RemoveAt(point.ownerPointIndex);
+                }
+            }
+            using (_trailUpdateMarkerPostJob_AddPoints.Auto())
+            { 
+                mongerRaycastDependency.Complete();
                 for(int i = 0; i < _mongerInstances.Count; i++)
                 {
-                    _mongerInstances[i].UpdateTrail(deltaTime);
+                    var instance = _mongerInstances[i];
+                    instance.AddPoint(mongerRaycastHitBuffer[i]);
                 }
+
+                if (mongerTransformsAccessArray.isCreated)
+                    mongerTransformsAccessArray.Dispose();
+                if(pointsToKill.IsCreated)
+                    pointsToKill.Dispose();
+                if(mongerRaycastHitBuffer.IsCreated)
+                    mongerRaycastHitBuffer.Dispose();
+                if(mongerRaycastCommands.IsCreated)
+                    mongerRaycastCommands.Dispose();
             }
         }
 
@@ -481,6 +567,7 @@ public class MongerManager_Jobbified : MonoBehaviour
         public float pointLifetime;
         public float totalLifetime;
         public float remappedLifetime0to1;
+        public int ownerPointIndex;
         public int currentOwnerInstanceID;
         public ManagerIndex managerIndex => _managerIndex;
         private ManagerIndex _managerIndex;
@@ -501,7 +588,8 @@ public class MongerManager_Jobbified : MonoBehaviour
             pointLifetime = 0;
             totalLifetime = 0;
             remappedLifetime0to1 = 0;
-            currentOwnerInstanceID = -1;
+            ownerPointIndex = -1;
+            currentOwnerInstanceID = 0;
         }
     }
 

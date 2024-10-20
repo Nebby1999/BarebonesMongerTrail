@@ -1,20 +1,24 @@
 using System.Collections;
 using System.Collections.Generic;
+using Unity.Burst;
 using Unity.Collections;
 using Unity.Jobs;
 using UnityEngine;
 
-public struct KillTrailsJob : IJobParallelFor
+[BurstCompile(OptimizeFor = OptimizeFor.Performance)]
+public struct KillPointsJob : IJobParallelFor
 {
+    [ReadOnly]
     public NativeArray<MongerManager_Jobbified.TarPoint> points;
-    public NativeList<MongerManager_Jobbified.ManagerIndex>.ParallelWriter indicesToKill;
+    [WriteOnly]
+    public NativeList<MongerManager_Jobbified.TarPoint>.ParallelWriter pointsToKill;
 
     public void Execute(int index)
     {
         var point = points[index];
         if(point.pointLifetime <= 0)
         {
-            indicesToKill.AddNoResize(point.managerIndex);
+            pointsToKill.AddNoResize(point);
         }
     }
 }

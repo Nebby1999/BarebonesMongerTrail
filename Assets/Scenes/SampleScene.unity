@@ -286,7 +286,7 @@ MonoBehaviour:
   doLifetimeReduction: 1
   doPointScaling: 1
   mongerPrefab: {fileID: 3731851487570662621, guid: e9fb6dd6b2d01d244898bca9b74f45fe, type: 3}
-  mongerCount: 10
+  mongerCount: 100
   spawnArea: {x: 50, y: 50}
   pointPrefab: {fileID: 3987722604665331209, guid: 194a9a7f50c0fa649a9dcbf22b52c05b, type: 3}
   raycastMask:
@@ -754,7 +754,6 @@ MonoBehaviour:
   doLifetimeReduction: 1
   doPointScaling: 1
   mongerPrefab: {fileID: 8849482514696603859, guid: bdc122e766b6baf4b8bdaf27f73684c5, type: 3}
-  mongerCount: 100
   spawnArea: {x: 50, y: 50}
   pointPrefab: {fileID: 3987722604665331209, guid: 194a9a7f50c0fa649a9dcbf22b52c05b, type: 3}
   raycastMask:
