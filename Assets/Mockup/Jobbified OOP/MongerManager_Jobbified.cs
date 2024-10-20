@@ -51,6 +51,7 @@ public class MongerManager_Jobbified : MonoBehaviour
     private List<TarPoolEntry> _tarPoolEntries;
     private TransformAccessArray _allPointTransforms;
     private NativeList<TarPoint> _allTarPoints;
+    private NativeQueue<int> _invalidTarPointIndices;
     private NativeList<ManagerIndex> _activeTarPoints;
 
     private List<int> _physicsChecksIgnoredObjectIDs = new List<int>();
@@ -66,10 +67,11 @@ public class MongerManager_Jobbified : MonoBehaviour
         instance = this;
 
         _totalPointsPerMonger = Mathf.CeilToInt(pointLifetime) * 5;
-        _allTarPoints = new NativeList<TarPoint>(Allocator.Persistent);
-        _allPointTransforms = new TransformAccessArray(0);
-        _activeTarPoints = new NativeList<ManagerIndex>(Allocator.Persistent);
         _tarPoolEntries = new List<TarPoolEntry>();
+        _allPointTransforms = new TransformAccessArray(0);
+        _allTarPoints = new NativeList<TarPoint>(Allocator.Persistent);
+        _invalidTarPointIndices = new NativeQueue<int>(Allocator.Persistent);
+        _activeTarPoints = new NativeList<ManagerIndex>(Allocator.Persistent);
     }
 
     public void AddMonger(MongerTrail_Jobbified trail)
@@ -104,12 +106,15 @@ public class MongerManager_Jobbified : MonoBehaviour
 
     private int GetFreeTarPointIndex()
     {
-        int index = _allTarPoints.IndexOf(TarPoint.invalid);
-        if(index == -1)
+        int index = -1;
+        //Use the stash of invalid indices first, should be considerably quicker.
+        if (_invalidTarPointIndices.TryDequeue(out index))
         {
-            _allTarPoints.Add(TarPoint.invalid);
-            index = _allTarPoints.Length - 1;
+            return index;
         }
+
+        _allTarPoints.Add(TarPoint.invalid);
+        index = _allTarPoints.Length - 1;
         return index;
     }
 
@@ -161,12 +166,15 @@ public class MongerManager_Jobbified : MonoBehaviour
         if (tarPoint.managerIndex != gameObjectForPoint.managerPoolIndex)
             return;
 
+        int index = (int)tarPoint.managerIndex;
 
-        _allTarPoints[(int)tarPoint.managerIndex] = TarPoint.invalid;
+        //This index is being freed, add it to the stash so another monger can use it.
+        _invalidTarPointIndices.Enqueue(index);
+        _allTarPoints[index] = TarPoint.invalid;
         gameObjectForPoint.isInPool = true;
         //Maybe remove at swap back?
-        _allPointTransforms[(int)tarPoint.managerIndex] = null;
-        _tarPoolEntries[(int)tarPoint.managerIndex] = gameObjectForPoint;
+        _allPointTransforms[index] = null;
+        _tarPoolEntries[index] = gameObjectForPoint;
     }
 
     private void FixedUpdate()
@@ -339,6 +347,9 @@ public class MongerManager_Jobbified : MonoBehaviour
 
         if (_activeTarPoints.IsCreated)
             _activeTarPoints.Dispose();
+
+        if (_invalidTarPointIndices.IsCreated)
+            _invalidTarPointIndices.Dispose();
 
         instance = null;
     }
