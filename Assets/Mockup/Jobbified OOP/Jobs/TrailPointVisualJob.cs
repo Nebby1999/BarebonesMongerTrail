@@ -11,11 +11,17 @@ public struct TrailPointVisualJob : IJobParallelForTransform
     public float3 maxSize;
     [ReadOnly]
     public NativeArray<MongerManager_Jobbified.TarPoint> tarPoints;
+    [ReadOnly]
+    public NativeList<MongerManager_Jobbified.ManagerIndex> activeTarPoints;
 
     public void Execute(int index, TransformAccess transform)
     {
-        var point = tarPoints[index];
-        if(!transform.isValid || !point.isValid)
+        //Geet the manager index, which we use to get the actual point to modify.
+        var managerIndex = (int)activeTarPoints[index];
+        var point = tarPoints[managerIndex];
+
+        //If transform is not valid, it means its from one that isnt active. i dont think this should happen?
+        if(!point.isValid || !transform.isValid)
         {
             return;
         }

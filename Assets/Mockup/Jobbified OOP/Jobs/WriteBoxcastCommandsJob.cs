@@ -12,6 +12,8 @@ public struct WriteBoxcastCommandsJob : IJobParallelFor
     public LayerMask physicsCheckMask;
     public NativeArray<MongerManager_Jobbified.TarPoint> tarPoints;
     public NativeArray<BoxcastCommand> output;
+
+    //index is equal to tarPoints[index]'s managerIndex.
     public void Execute(int index)
     {
         var tarPoint = tarPoints[index];

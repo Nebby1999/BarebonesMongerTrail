@@ -52,7 +52,7 @@ public class MongerManager_Jobbified : MonoBehaviour
     private List<TarPoolEntry> _tarPoolEntries;
     private TransformAccessArray _allPointTransforms;
     private NativeList<TarPoint> _allTarPoints;
-    private NativeList<ManagerIndex> _tarPointPhysicsChecks;
+    private NativeList<ManagerIndex> _activeTarPoints;
 
     private List<int> _physicsChecksIgnoredObjectIDs = new List<int>();
 
@@ -69,7 +69,7 @@ public class MongerManager_Jobbified : MonoBehaviour
         _totalPointsPerMonger = Mathf.CeilToInt(pointLifetime) * 5;
         _allTarPoints = new NativeList<TarPoint>(Allocator.Persistent);
         _allPointTransforms = new TransformAccessArray(0);
-        _tarPointPhysicsChecks = new NativeList<ManagerIndex>(Allocator.Persistent);
+        _activeTarPoints = new NativeList<ManagerIndex>(Allocator.Persistent);
         _tarPoolEntries = new List<TarPoolEntry>();
 
     }
@@ -115,7 +115,7 @@ public class MongerManager_Jobbified : MonoBehaviour
         }
 
         var entry = _tarPoolEntries[index];
-        if(!entry.tiedGameObject)
+        if (!entry.tiedGameObject)
         {
             if (currentPoolChildCount >= _totalPointsPerMonger)
             {
@@ -139,6 +139,10 @@ public class MongerManager_Jobbified : MonoBehaviour
             };
             _tarPoolEntries.Insert(index, entry);
         }
+        else //Game object already exists, we just need to add it back to the all point transforms.
+        {
+            _allPointTransforms[index] = entry.cachedTransform;
+        }
         return entry;
     }
 
@@ -153,6 +157,8 @@ public class MongerManager_Jobbified : MonoBehaviour
 
         _allTarPoints[(int)tarPoint.managerIndex] = TarPoint.invalid;
         gameObjectForPoint.isInPool = true;
+        //Maybe remove at swap back?
+        _allPointTransforms[(int)tarPoint.managerIndex] = null;
         _tarPoolEntries[(int)tarPoint.managerIndex] = gameObjectForPoint;
     }
 
@@ -184,11 +190,11 @@ public class MongerManager_Jobbified : MonoBehaviour
             shouldTrailUpdate = true;
         }
 
+        //TODO: Jobify this process
         if(shouldTrailUpdate)
         {
             using(_trailUpdateMarker.Auto())
             {
-
                 for(int i = 0; i < _mongerInstances.Count; i++)
                 {
                     _mongerInstances[i].UpdateTrail(deltaTime);
@@ -196,12 +202,25 @@ public class MongerManager_Jobbified : MonoBehaviour
             }
         }
 
+        //Our jobs should only affect tar points who's indices are not invalid. these active points are also used on the lifetime and size jobs so we need to run it each fixed update. This is done because some points may be allocated in memory but not used (IE: a monger that spawned them was destroyed)
+        //Unlike all other jobs, we need to complete this immediatly, since we need to know the length of the points we should modify prior to scheduling the actual heavy lifting jobs.
+        _activeTarPoints.Clear();
+        if(_activeTarPoints.Capacity <= _allTarPoints.Length) //Ensure we have enough capacity prior to using the parallel writer.
+        {
+            _activeTarPoints.SetCapacity(_allTarPoints.Length);
+        }
+        new GetActiveTarPointsJob
+        {
+            activePoints = _activeTarPoints.AsParallelWriter(),
+            allTarPoints = _allTarPoints,
+        }.Schedule(_allTarPoints.Length, _totalPointsPerMonger, dependency).Complete();
+
         if(shouldPhysicsCheck)
         {
+            //We need to check if the active points have overlapping objects
             using(_physicsChecksPreJobMarker.Auto())
             {
-                _tarPointPhysicsChecks.Clear();
-                physicsChecksBoxcastCommands = new NativeArray<BoxcastCommand>(arraySizes, Allocator.TempJob);
+                physicsChecksBoxcastCommands = new NativeArray<BoxcastCommand>(_activeTarPoints.Length, Allocator.TempJob);
                 //Write the boxcasts
                 dependency = new WriteBoxcastCommandsJob
                 {
@@ -209,20 +228,20 @@ public class MongerManager_Jobbified : MonoBehaviour
                     physicsScene = Physics.defaultPhysicsScene,
                     physicsCheckMask = physicsCheckMask,
                     tarPoints = _allTarPoints
-                }.Schedule(_allTarPoints.Length, _totalPointsPerMonger, dependency);
+                }.Schedule(_activeTarPoints.Length, _totalPointsPerMonger, dependency);
 
                 //Check for any colliders the points have collided with.
                 physicsChecksHitBuffer = new NativeArray<RaycastHit>(physicsChecksBoxcastCommands.Length, Allocator.TempJob);
                 dependency = BoxcastCommand.ScheduleBatch(physicsChecksBoxcastCommands, physicsChecksHitBuffer, _totalPointsPerMonger, dependency);
 
                 //We should filter out the points that didnt hit anything.
-                pointsThatCollidedWithSomething = new NativeList<ManagerIndex>(_tarPointPhysicsChecks.Capacity / 2, Allocator.TempJob);
+                pointsThatCollidedWithSomething = new NativeList<ManagerIndex>(_activeTarPoints.Capacity / 2, Allocator.TempJob);
                 dependency = new FilterManagerIndicesThatDidntCollideWithAnythingJob
-                {
-                    input = _tarPointPhysicsChecks,
+                {   
+                    input = _allTarPoints,
                     output = pointsThatCollidedWithSomething.AsParallelWriter(),
                     raycastHits = physicsChecksHitBuffer
-                }.Schedule(_tarPointPhysicsChecks.Length, _totalPointsPerMonger, dependency);
+                }.Schedule(_activeTarPoints.Length, _totalPointsPerMonger, dependency);
             }
         }
 
@@ -235,9 +254,10 @@ public class MongerManager_Jobbified : MonoBehaviour
                     TrailPointLifetimeJob lifetimeJob = new TrailPointLifetimeJob
                     {
                         deltaTime = deltaTime,
-                        tarPoints = _allTarPoints
+                        tarPoints = _allTarPoints,
+                        activeTarPoints = _activeTarPoints,
                     };
-                    dependency = lifetimeJob.Schedule(_allPointTransforms.length, _totalPointsPerMonger, dependency);
+                    dependency = lifetimeJob.Schedule(_activeTarPoints.Length, _totalPointsPerMonger, dependency);
                 }
 
                 if(doPointScaling)
@@ -246,7 +266,8 @@ public class MongerManager_Jobbified : MonoBehaviour
                     {
                         maxSize = new float3(1),
                         tarPoints = _allTarPoints,
-                        totalLifetime = pointLifetime
+                        totalLifetime = pointLifetime,
+                        activeTarPoints = _activeTarPoints
                     };
                     dependency = job.Schedule(_allPointTransforms, dependency);
                 }
@@ -306,8 +327,8 @@ public class MongerManager_Jobbified : MonoBehaviour
             _allPointTransforms.Dispose();
 
 
-        if (_tarPointPhysicsChecks.IsCreated)
-            _tarPointPhysicsChecks.Dispose();
+        if (_activeTarPoints.IsCreated)
+            _activeTarPoints.Dispose();
 
         instance = null;
     }
@@ -365,7 +386,18 @@ public class MongerManager_Jobbified : MonoBehaviour
     /// </summary>
     public struct TarPoolEntry : IEquatable<TarPoolEntry>
     {
-        public GameObject tiedGameObject;
+        public GameObject tiedGameObject
+        {
+            get => _tiedGameObject;
+            set
+            {
+                _tiedGameObject = value;
+                cachedTransform = value.transform;
+            }
+        }
+        private GameObject _tiedGameObject;
+
+        public Transform cachedTransform;
         public bool isInPool
         {
             get => _isInPool;
@@ -384,7 +416,8 @@ public class MongerManager_Jobbified : MonoBehaviour
 
         internal TarPoolEntry(int index)
         {
-            tiedGameObject = null;
+            _tiedGameObject = null;
+            cachedTransform = null;
             _isInPool = false;
             _managerPoolIndex = (ManagerIndex)index;
         }
